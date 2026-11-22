@@ -61,10 +61,19 @@ class AudioProfile:
             high = np.zeros(n, np.float32)
         arousal = 0.55 * loud + 0.2 * bright + 0.25 * high
         self.arousal = _smooth(arousal, max(1, int(round(0.3 / self.hop)))).astype(np.float32)
+        self.sound = getattr(self, 'sound', None)
         self.events = detect_events(self)
         self.pauses = detect_pauses(self)
         self._ev_starts = [e['start'] for e in self.events]
         self._cum_ar = np.concatenate([[0.0], np.cumsum(self.arousal, dtype=np.float64)])
+
+    def attach_sound(self, timeline):
+        """Use a YAMNet SoundTimeline: the classifier names the events (laughter, scream, explosion, gunshot, cheer),
+        the loudness analysis keeps their timing. Without it the heuristic labels stay."""
+        self.sound = timeline
+        self.events = detect_events(self)
+        self._ev_starts = [e['start'] for e in self.events]
+        return self
 
     # ------------------------------------------------------------------ queries
     def idx(self, t):
@@ -247,6 +256,8 @@ def detect_events(p, thr=0.55):
             events.append({'start': round(max(0, t - 0.15), 2), 'end': round(t + 0.6, 2), 'peak': t, 'kind': 'spike',
                            'strength': round(float(min(2.0, jump[i - k] / 12.0)), 2), 'loud_db': round(float(p.rel[i]), 1)})
     events.sort(key=lambda e: e['start'])
+    if getattr(p, 'sound', None) is not None:
+        events = _apply_sound_model(p, events)
     # dramatic pause: an event right after >= 0.7 s of near-silence
     quiet = p.rel < -12
     for e in events:
@@ -256,6 +267,38 @@ def detect_events(p, thr=0.55):
         if len(pre) and pre.mean() >= 0.6 and len(pre) * p.hop >= 0.7:
             e['after_pause'] = True
     return events
+
+
+MODEL_PRIORITY = ('laughter', 'scream', 'explosion', 'gunshot', 'cheer')
+WEAK_SUPPORT = 0.04     # a laughter/scream found by the loudness rhythm stays if the classifier gives at least this
+
+
+def _apply_sound_model(p, events):
+    """Relabel loudness events with the classifier and add classifier-only events (e.g. quiet laughter)."""
+    from .sound_events import LOUD_NEEDED, THRESH
+    tl = p.sound
+    out = []
+    for e in events:
+        # only classifier events that passed all its checks (threshold, look-alikes) may rename a loud moment
+        near = [m for m in tl.events if m['start'] < e['end'] + 0.3 and e['start'] - 0.3 < m['end']]
+        best = max(near, key=lambda m: m['prob'] / THRESH[m['kind']], default=None)
+        if best is not None:
+            e = dict(e, kind=best['kind'], model=best['prob'])
+        elif e['kind'] in ('laughter', 'scream') and tl.max_in(e['start'], e['end']).get(e['kind'], 0.0) >= WEAK_SUPPORT:
+            e = dict(e, model=round(tl.max_in(e['start'], e['end'])[e['kind']], 3))   # rhythm + weak model agreement
+        elif e['kind'] in ('laughter', 'scream'):
+            e = dict(e, kind='loud', model=0.0)        # the classifier does not hear laughter/screaming here
+        out.append(e)
+    for m in tl.events:
+        if any(o['start'] < m['end'] and m['start'] < o['end'] for o in out):
+            continue
+        a, b = p.idx(m['start']), max(p.idx(m['start']) + 1, p.idx(m['end']))
+        if len(p.rel[a:b]) and float(np.max(p.rel[a:b])) < LOUD_NEEDED.get(m['kind'], 0.0):
+            continue
+        out.append({'start': m['start'], 'end': m['end'], 'peak': m['peak'], 'kind': m['kind'],
+                    'strength': round(min(2.0, 0.6 + m['prob']), 2), 'loud_db': None, 'model': m['prob']})
+    out.sort(key=lambda e: e['start'])
+    return out
 
 
 def detect_pauses(p, min_len=0.7):
@@ -284,7 +327,7 @@ def span_features(p, start, end):
     kinds = {}
     for e in evs:
         kinds[e['kind']] = kinds.get(e['kind'], 0) + 1
-    strong = [e for e in evs if e['strength'] >= 0.8 or e['kind'] in ('scream', 'laughter')]
+    strong = [e for e in evs if e['strength'] >= 0.8 or e['kind'] in ('scream', 'laughter', 'explosion')]
     peak_rel = (int(np.argmax(ar)) / max(1, len(ar) - 1)) if len(ar) else 0.5
     # longest stretch of silence inside the span
     longest = 0.0
@@ -312,6 +355,15 @@ def audio_score(f):
     if k.get('scream'):
         s += 12
         facts.append(('scream', k['scream']))
+    if k.get('explosion'):
+        s += 8
+        facts.append(('explosion', k['explosion']))
+    if k.get('gunshot'):
+        s += 4
+        facts.append(('gunshot', k['gunshot']))
+    if k.get('cheer'):
+        s += 5
+        facts.append(('cheer', k['cheer']))
     if f['spike']:
         s += 6
         facts.append(('volume_spike', None))

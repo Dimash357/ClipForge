@@ -40,6 +40,8 @@ DEFAULTS = {
     'loudness': 'stream', 'auto_length': False,
     # v5.3: the streamer's name (optional, typed by the user) for Shorts titles
     'streamer': '',
+    # v5.4: sound classifier, caption font and swearing filter
+    'highlight_sound_ai': True, 'caption_font': 'style', 'caption_censor': False,
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
@@ -47,10 +49,11 @@ CHOICES = {
     'bg_fill': {'blur', 'solid', 'focus'}, 'director_fallback': {'gameplay', 'smart'},
     'transition': {'none', 'fade'}, 'cam_position': {'bottom', 'top'}, 'highlight_engine': {'smart', 'classic'},
     'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'}, 'loudness': {'stream', 'off'},
+    'caption_font': {'style', 'Montserrat', 'Arial Black', 'Arial', 'Impact'},
 }
 LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
-         'highlight_motion', 'auto_length')
+         'highlight_motion', 'auto_length', 'highlight_sound_ai', 'caption_censor')
 
 
 def _b(v):

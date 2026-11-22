@@ -30,6 +30,7 @@ echo Installing requirements into the environment...
 "%ENVPY%" -m pip install --disable-pip-version-check -r requirements.txt -c "%ENVDIR%\clipforge-constraints.txt"
 if errorlevel 1 goto pip_failed
 "%ENVPY%" tools\preflight.py deps --pip-check || goto failed
+"%ENVPY%" tools\preflight.py models
 "%ENVPY%" tools\preflight.py backup-db || goto failed
 "%ENVPY%" manage.py migrate || goto failed
 if not exist source_library mkdir source_library

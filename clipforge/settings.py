@@ -26,6 +26,9 @@ SOURCE_LIBRARY_ROOT=BASE_DIR / "source_library"
 # --- ClipForge v5 ---
 # Heavy jobs (whisper / ffmpeg) run through one in-process queue. 1 is right for an 8 GB GPU.
 MAX_CONCURRENT_JOBS = max(1, int(os.getenv('CLIPFORGE_MAX_JOBS', '1')))
+# Tests never download models (they use a model that is already there, or the heuristic fallback)
+import sys as _sys
+SOUND_MODEL_DOWNLOAD = not (len(_sys.argv) > 1 and _sys.argv[1] == 'test') and os.getenv('CLIPFORGE_SOUND_DOWNLOAD', '1') == '1'
 # Largest source video (upload, YouTube download, source_library). Long streams in 1080p easily exceed 1 GB.
 MAX_SOURCE_BYTES = int(float(os.getenv('CLIPFORGE_MAX_SOURCE_GB', '8')) * 1024 ** 3)
 LOG_DIR = BASE_DIR / 'logs'

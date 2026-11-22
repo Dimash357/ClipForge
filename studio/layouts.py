@@ -252,12 +252,14 @@ REACTION_CAM_SHARE = 0.40       # webcam panel height in Reaction Priority
 REACTION_ZOOM = 1.12            # small extra zoom so the face can be centred / eyes placed on the upper third
 
 
-def reaction_cam_crop(W, Hc, cw, ch, face_x, face_y, face_h, zoom=REACTION_ZOOM):
+def reaction_cam_crop(W, Hc, cw, ch, face_x, face_y, face_h, zoom=REACTION_ZOOM, eye_y=None):
     """Scale + crop of the webcam (cw x ch px) into W x Hc: face centred horizontally, eyes on the upper third.
-    face_x/face_y: face centre relative to the crop, face_h: face height relative to the crop height."""
+    face_x/face_y: face centre relative to the crop, face_h: face height relative to the crop height,
+    eye_y: measured eye line relative to the crop (YuNet landmarks) - estimated from the face box if None."""
     s = max(W / cw, Hc / ch) * zoom
     sw, sh = ev(cw * s), ev(ch * s)
-    eye_y = max(0.0, face_y - 0.12 * face_h)           # eyes sit ~12% of the face height above its centre
+    if eye_y is None:
+        eye_y = max(0.0, face_y - 0.12 * face_h)       # eyes sit ~12% of the face height above its centre
     x = int(min(max(0.0, face_x * sw - W / 2), sw - W)) // 2 * 2
     y = int(min(max(0.0, eye_y * sh - Hc / 3), sh - Hc)) // 2 * 2
     return sw, sh, x, y
@@ -274,7 +276,10 @@ def reaction_layout(W, H, src_w, src_h, inp, out, cam, bg='blur', hide_cam=True,
     fx = (cam['x'] * src_w + fr[0] * cam['w'] * src_w - cx) / cw
     fy = (cam['y'] * src_h + fr[1] * cam['h'] * src_h - cy) / ch
     fh = float(cam.get('face_h') or 0.45) * cam['h'] * src_h / ch
-    sw, sh, x, y = reaction_cam_crop(W, Hc, cw, ch, min(1.0, max(0.0, fx)), min(1.0, max(0.0, fy)), fh)
+    ey = None
+    if cam.get('eye_rel') is not None:
+        ey = min(1.0, max(0.0, (cam['y'] * src_h + cam['eye_rel'] * cam['h'] * src_h - cy) / ch))
+    sw, sh, x, y = reaction_cam_crop(W, Hc, cw, ch, min(1.0, max(0.0, fx)), min(1.0, max(0.0, fy)), fh, eye_y=ey)
     parts = [f'[{inp}]split=2[gsrc0][cam]',
              f'[cam]crop={cw}:{ch}:{cx}:{cy},scale={sw}:{sh}:flags=lanczos,crop={W}:{Hc}:{x}:{y},'
              f'unsharp=5:5:0.6:5:5:0.0,setsar=1[campanel]']
@@ -313,7 +318,7 @@ def seg_layout(seg, ctx, inp, out):
     return fit_layout(W, H, sw, sh, inp, out, bg=ctx['bg'], zoom=zoom, tag='q')
 
 
-def build_graph(segments, ctx, ass_name='captions.ass', transition='none', tdur=0.25, fps=None):
+def build_graph(segments, ctx, ass_name='captions.ass', transition='none', tdur=0.25, fps=None, fontsdir=None):
     """segments: [{start,end,type,...}] relative to clip start. Returns (graph, margin_fn)."""
     n = len(segments)
     margins = []
@@ -346,7 +351,7 @@ def build_graph(segments, ctx, ass_name='captions.ass', transition='none', tdur=
     tail = []
     if fps:
         tail.append(f'fps={fps}')
-    tail.append(f'ass={ass_name}')
+    tail.append(f'ass={ass_name}' + (f':fontsdir={fontsdir}' if fontsdir else ''))   # relative dir: no Windows "C:" escaping
     tail.append('format=yuv420p')
     parts.append('[vc]' + ','.join(tail) + '[vout]')
 

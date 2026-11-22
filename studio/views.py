@@ -26,9 +26,10 @@ LENGTHS = {'auto': (12, 60), 'short': (15, 32), 'standard': (20, 55), 'long': (4
 OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'caption_words', 'caption_animate', 'bg_fill',
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
-                 'highlight_audio', 'highlight_motion', 'loudness', 'streamer')
+                 'highlight_audio', 'highlight_motion', 'loudness', 'streamer', 'highlight_sound_ai', 'caption_font',
+                 'caption_censor')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
-              'highlight_motion')
+              'highlight_motion', 'highlight_sound_ai', 'caption_censor')
 
 
 def _ctx_index(**extra):

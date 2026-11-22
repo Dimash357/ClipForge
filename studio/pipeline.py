@@ -61,18 +61,19 @@ def transcribe(path, lang, rep=None, duration=None):
     for dev, comp in attempts:
         try:
             model = _get_model(model_name, dev, comp)
-            segments, info = model.transcribe(str(path), language=None if lang == 'auto' else lang, beam_size=5,
-                                              word_timestamps=True, vad_filter=True)
-            out = []
-            for s in segments:
-                if rep:
-                    rep.check()
-                    if duration:
-                        rep.frac(s.end / duration, f'Распознаём речь: {int(min(100, 100 * s.end / duration))}% ({dev.upper()})')
-                words = [{'start': round(w.start, 3), 'end': round(w.end, 3), 'text': w.word.strip()}
-                         for w in (s.words or []) if w.word.strip()]
-                out.append({'start': round(s.start, 3), 'end': round(s.end, 3), 'text': s.text.strip(), 'words': words})
-            transcribe.last_info = {'model': model_name, 'device': dev, 'compute': comp,
+            batch = whisper_batch_size(dev)
+            out, info, used = None, None, 0
+            if batch:
+                try:
+                    out, info = _run_whisper(model, path, lang, rep, duration, dev, batch)
+                    used = batch
+                except JobCancelled:
+                    raise
+                except Exception as exc:          # OOM / old faster-whisper: the sequential path still works
+                    log.warning('batched Whisper failed on %s (%s); sequential decoding', dev, str(exc)[:200])
+            if out is None:
+                out, info = _run_whisper(model, path, lang, rep, duration, dev, 0)
+            transcribe.last_info = {'model': model_name, 'device': dev, 'compute': comp, 'batch': used,
                                     'detected_language': getattr(info, 'language', None), 'requested_lang': lang}
             return out
         except JobCancelled:
@@ -87,6 +88,40 @@ def transcribe(path, lang, rep=None, duration=None):
 
 
 transcribe.last_info = {}
+
+
+def whisper_batch_size(device):
+    """WHISPER_BATCH: 'auto' (default) = 16 on CUDA, off on CPU; '0' = off; a number = that batch size."""
+    v = os.getenv('WHISPER_BATCH', 'auto').strip().lower()
+    if v in ('auto', ''):
+        return 16 if device == 'cuda' else 0
+    try:
+        return max(0, min(64, int(v)))
+    except ValueError:
+        return 0
+
+
+def _run_whisper(model, path, lang, rep, duration, dev, batch):
+    """One decoding pass. batch > 0: faster-whisper's BatchedInferencePipeline (VAD-cut chunks decoded in
+    parallel: 2-4x faster on a GPU); 0: the classic sequential decoder."""
+    kw = dict(language=None if lang == 'auto' else lang, beam_size=5, word_timestamps=True, vad_filter=True)
+    if batch:
+        from faster_whisper import BatchedInferencePipeline
+        segments, info = BatchedInferencePipeline(model=model).transcribe(str(path), batch_size=batch, **kw)
+    else:
+        segments, info = model.transcribe(str(path), **kw)
+    out = []
+    label = dev.upper() + (f', пакеты по {batch}' if batch else '')
+    for s in segments:
+        if rep:
+            rep.check()
+            if duration:
+                rep.frac(s.end / duration, f'Распознаём речь: {int(min(100, 100 * s.end / duration))}% ({label})')
+        words = [{'start': round(w.start, 3), 'end': round(w.end, 3), 'text': w.word.strip()}
+                 for w in (s.words or []) if w.word.strip()]
+        out.append({'start': round(s.start, 3), 'end': round(s.end, 3), 'text': s.text.strip(), 'words': words})
+    out.sort(key=lambda x: x['start'])           # batched output is chronological, but never trust it blindly
+    return out, info
 
 
 def candidates(segments, duration, minlen=20, maxlen=55):
@@ -378,6 +413,11 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, 
             log.warning('audio analysis failed (%s); ranking on the transcript only', str(exc)[:300])
             notes.append('audio_failed')
             audio = None
+        if audio is not None and opts.get('highlight_sound_ai', True):
+            tl = _sound_timeline(source, wav, duration, cache, rep, cancel, notes)
+            if tl is not None:
+                audio.attach_sound(tl)
+                log.info('sound classifier events: %s', tl.summary())
     if opts.get('highlight_motion', True) and vinfo:
         try:
             hit = ac.load_npz(Path(cache) / 'screen.npz') if cache else None
@@ -404,6 +444,37 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, 
 
 
 highlight_signals.last_screen = None
+
+
+def _sound_timeline(source, wav, duration, cache, rep, cancel, notes):
+    """YAMNet sound classes for the whole track (cached). None -> keep the loudness heuristics."""
+    from . import analysis_cache as ac, sound_events
+    try:
+        hit = ac.load_npz(Path(cache) / 'sound.npz') if cache else None
+        tl = sound_events.from_arrays(hit) if hit else None
+        if tl is not None:
+            notes.append('sound_cached')
+            return tl
+        if rep:
+            rep.frac(0.6, 'Загружаем классификатор звуков (один раз, 16 МБ)...')
+        if sound_events.load(download=settings.SOUND_MODEL_DOWNLOAD,
+                             progress=(lambda f: rep.frac(0.6, f'Загружаем классификатор звуков: {int(f * 100)}%'))
+                             if rep else None) is None:
+            notes.append('sound_model_unavailable')
+            return None
+        tl = sound_events.classify_file(
+            wav or source, duration, cancel=cancel,
+            progress=(lambda f: rep.frac(0.6 + 0.05 * f, f'Распознаём звуки: смех, крики, взрывы... {int(f * 100)}%'))
+            if rep else None)
+        if tl is not None and cache:
+            ac.save_npz(Path(cache) / 'sound.npz', **sound_events.to_arrays(tl))
+        return tl
+    except JobCancelled:
+        raise
+    except Exception as exc:
+        log.warning('sound classifier failed (%s); loudness heuristics only', str(exc)[:300])
+        notes.append('sound_failed')
+        return None
 
 
 def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None, cache=None, wav=None):

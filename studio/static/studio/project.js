@@ -229,6 +229,7 @@ function openDialog(c, focusStyle) {
   rb.style.display = auto ? '' : 'none'; if (auto) rb.textContent = `↺ Найденные границы (${auto[0].toFixed(1)}–${auto[1].toFixed(1)})`;
   $('d_corner').value = 'auto'; $('d_style').value = o.subtitle_style; $('d_words').value = o.caption_words || 0;
   $('d_hl').value = o.caption_highlight == null ? 'auto' : (o.caption_highlight ? '1' : '0'); $('d_caps').value = o.captions ? '1' : '0';
+  $('d_font').value = o.caption_font || 'style'; $('d_censor').value = o.caption_censor ? '1' : '0';
   $('d_preset').value = o.preset; $('d_quality').value = o.quality; $('d_bg').value = o.bg_fill; $('d_trans').value = o.transition;
   $('dlgerr').style.display = 'none'; dlg.showModal(); if (focusStyle) $('d_style').focus();
 }
@@ -240,7 +241,7 @@ $('d_setend').onclick = () => $('d_end').value = $('dlgvideo').currentTime.toFix
 $('d_go').onclick = async () => {
   const body = {start: parseFloat($('d_start').value), end: parseFloat($('d_end').value), snap: $('d_snap').checked, mode: $('d_mode').value, corner: $('d_corner').value,
     overrides: {subtitle_style: $('d_style').value, caption_words: parseInt($('d_words').value || '0', 10), caption_highlight: $('d_hl').value === 'auto' ? null : $('d_hl').value === '1',
-      captions: $('d_caps').value === '1', preset: $('d_preset').value, quality: $('d_quality').value, bg_fill: $('d_bg').value, transition: $('d_trans').value}};
+      captions: $('d_caps').value === '1', caption_font: $('d_font').value, caption_censor: $('d_censor').value === '1', preset: $('d_preset').value, quality: $('d_quality').value, bg_fill: $('d_bg').value, transition: $('d_trans').value}};
   const r = await post(`/api/clips/${dlgClip.id}/rerender/`, body);
   if (!r.ok) { const e = $('dlgerr'); e.textContent = (await r.json()).error || 'Ошибка'; e.style.display = 'block'; return; }
   dlg.close(); $('progresspanel').style.display = 'block'; poll();

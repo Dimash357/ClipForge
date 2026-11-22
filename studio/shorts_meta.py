@@ -119,6 +119,8 @@ def build_context(text, lang=None, audio_events=(), screen_events=(), scene_type
         cats['fail'] = cats.get('fail', 0) + 14 * screen['fail_screen']
     if float(scores.get('action') or 0) >= 65 or screen.get('flash'):
         cats['action'] = cats.get('action', 0) + 10
+    if audio.get('explosion') or audio.get('gunshot'):
+        cats['action'] = cats.get('action', 0) + 10 * (audio.get('explosion', 0) + audio.get('gunshot', 0))
     if cues.get('fail') and screen.get('fail_screen'):
         cats['fail'] += 20                            # said AND seen: the clip is about this fail
     if cues.get('laugh_text') and audio.get('laughter'):
@@ -400,6 +402,11 @@ def _cached_profiles(fp):
     if d and d.exists():
         try:
             audio = audio_analysis.from_arrays(ac.load_npz(d / 'audio.npz'))
+            if audio is not None:
+                from . import sound_events
+                tl = sound_events.from_arrays(ac.load_npz(d / 'sound.npz'))
+                if tl is not None:
+                    audio.attach_sound(tl)
         except Exception as exc:
             log.warning('cached audio profile unreadable: %s', exc)
         try:
@@ -420,10 +427,14 @@ def context_for_clip(project, clip, text=None):
     info = clip.render_info or {}
     types = [s.get('type') for s in info.get('segments', [])]
     lang = (project.transcript_meta or {}).get('detected_language') or analysis.get('language')
-    opts = project.options or {}
+    from . import exports
+    opts = exports.resolve(project.options, info.get('opts'))
     who = verified_streamer(opts.get('streamer', ''), analysis.get('source_meta'))
-    return build_context(text if text is not None else clip.text, lang, a_ev, s_ev, types, clip.scores, who,
-                         clip.end - clip.start)
+    body = text if text is not None else clip.text
+    if opts.get('caption_censor'):
+        from . import captions
+        body = captions.censor_text(body)          # the same swearing filter as the captions (monetization)
+    return build_context(body, lang, a_ev, s_ev, types, clip.scores, who, clip.end - clip.start)
 
 
 def ensure_for_clip(project, clip, force=False, use_ai=True):

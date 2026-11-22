@@ -22,3 +22,6 @@ Thumbs.db
 # ClipForge local data
 backups/
 ffmpeg/
+
+# downloaded models (YAMNet); studio/models holds the bundled ones
+/models/

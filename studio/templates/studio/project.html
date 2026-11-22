@@ -22,6 +22,8 @@
 <div><label>Facecam в исходнике</label><select id="d_corner"><option value="auto">Авто</option><option value="top_left">Сверху слева</option><option value="top_right">Сверху справа</option><option value="bottom_left">Снизу слева</option><option value="bottom_right">Снизу справа</option></select></div>
 <div><label>Стиль субтитров</label><select id="d_style">{% for k, label in styles %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></div>
 <div><label>Слов в субтитрах <small>0 = по стилю</small></label><input type="number" id="d_words" min="0" max="6"></div>
+<div><label>Шрифт субтитров</label><select id="d_font"><option value="style">По стилю</option><option value="Montserrat">Montserrat</option><option value="Arial Black">Arial Black</option><option value="Arial">Arial</option><option value="Impact">Impact</option></select></div>
+<div><label>Мат в субтитрах</label><select id="d_censor"><option value="0">Показывать как есть</option><option value="1">Скрывать звёздочками</option></select></div>
 <div><label>Подсветка слов</label><select id="d_hl"><option value="auto">По стилю</option><option value="1">Включена</option><option value="0">Выключена</option></select></div>
 <div><label>Субтитры</label><select id="d_caps"><option value="1">Показывать</option><option value="0">Без субтитров</option></select></div>
 <div><label>Разрешение</label><select id="d_preset">{% for k, p in presets.items %}<option value="{{ k }}">{{ p.label }}</option>{% endfor %}</select></div>

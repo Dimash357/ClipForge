@@ -45,12 +45,18 @@ def _load_cascades():
     return _cascades
 
 
-def detect_faces_gray(gray, min_size=24):
-    """-> list of (x, y, w, h) in pixels (frontal Haar, alt2)."""
+def haar_faces(gray, min_size=24):
+    """-> list of (x, y, w, h) in pixels (frontal Haar, alt2). Fallback detector."""
     for c in _load_cascades():
         boxes = c.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5, minSize=(min_size, min_size))
         return [tuple(int(v) for v in b) for b in boxes]
     return []
+
+
+def detect_faces_gray(img, min_size=24):
+    """-> list of (x, y, w, h) in pixels. YuNet (DNN) when available, Haar otherwise; BGR input is best."""
+    from . import faces
+    return [f['box'] for f in faces.detect(img, min_size)]
 
 
 # ------------------------------------------------------------------ frame sampling
@@ -122,8 +128,13 @@ def frame_features(bgr, prev_small=None, detect=True, last_faces=None):
     H, W = gray.shape
     faces = []
     if detect:
-        for (x, y, w, h) in detect_faces_gray(gray):
-            faces.append({'cx': (x + w / 2) / W, 'cy': (y + h / 2) / H, 'w': w / W, 'h': h / H, 'area': w * h / (W * H)})
+        from . import faces as fd
+        for f in fd.detect(bgr):
+            x, y, w, h = f['box']
+            d = {'cx': (x + w / 2) / W, 'cy': (y + h / 2) / H, 'w': w / W, 'h': h / H, 'area': w * h / (W * H)}
+            if f['eyes']:
+                d['ey'] = round((f['eyes'][0][1] + f['eyes'][1][1]) / 2 / H, 4)     # eye line (YuNet landmarks)
+            faces.append(d)
     else:
         faces = [dict(f) for f in (last_faces or [])]
     small = cv2.resize(gray, (160, max(2, int(160 * H / W))), interpolation=cv2.INTER_AREA)
@@ -288,7 +299,11 @@ def estimate_cam(samples, edge_mean, corner_hint='auto'):
     cx, cy = float(np.median(xs)), float(np.median(ys))
     fw = float(np.median([h['w'] for h in hits]))
     fh = float(np.median([h['h'] for h in hits]))
-    return _make_cam_rect(cx, cy, fw, fh, corner, edge_mean, frac)
+    cam = _make_cam_rect(cx, cy, fw, fh, corner, edge_mean, frac)
+    eyes = [h['ey'] for h in hits if h.get('ey') is not None]
+    if eyes and cam['h'] > 0:
+        cam['eye_rel'] = round(max(0.0, min(1.0, (float(np.median(eyes)) - cam['y']) / cam['h'])), 3)
+    return cam
 
 
 def _make_cam_rect(cx, cy, fw, fh, corner, edge_mean, frac, aspect=1.3):

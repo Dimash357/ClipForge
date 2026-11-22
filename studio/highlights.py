@@ -236,6 +236,12 @@ def explain(scores, facts, lang='ru'):
         parts.append('крик / громкая реакция' if ru else 'a scream / loud reaction')
     if 'raised_voice' in f:
         parts.append('голос повышается' if ru else 'raised voice')
+    if 'explosion' in f:
+        parts.append('взрыв в игре' if ru else 'an explosion in the game')
+    if 'gunshot' in f:
+        parts.append('перестрелка' if ru else 'gunfire')
+    if 'cheer' in f:
+        parts.append('крики и овации' if ru else 'cheering')
     if 'volume_spike' in f:
         parts.append('резкий всплеск громкости' if ru else 'a sudden volume spike')
     if 'dramatic_pause' in f:
@@ -357,7 +363,7 @@ def _refine_bounds(c, sents, words, audio, duration, maxlen):
             facts.append(('kept_reaction', None))
     # ---- start: the clip opens on a burst -> keep what caused it (the gameplay moment right before)
     first_burst = next((e for e in evs if e['end'] > start and e['start'] <= start + 0.8 and
-                        (e['strength'] >= 0.8 or e['kind'] in ('scream', 'laughter', 'spike'))), None)
+                        (e['strength'] >= 0.8 or e['kind'] in ('scream', 'laughter', 'spike', 'explosion'))), None)
     if first_burst:
         want = max(first_burst['start'] - 1.5, start - 4.0, end - maxlen - 1.0, 0.0)
         prv = max((w['end'] for w in words if w['end'] <= start + 1e-6), default=0.0)
@@ -429,7 +435,7 @@ def _evaluate(ctx, i, j, start, end, a_lo=None, a_hi=None, origin='text'):
             facts += a_facts
             kinds = set(af['kinds'])
             corroborated = bool(cue) or sc['engagement'] >= 55 or fails or flashes or \
-                bool(kinds & {'scream', 'laughter', 'raised_voice'})
+                bool(kinds & {'scream', 'laughter', 'raised_voice', 'explosion', 'gunshot', 'cheer'})
             if not corroborated and a_sc > 40:
                 a_sc = 40 + (a_sc - 40) * 0.4          # volume alone is not a highlight
                 loud_only = True

@@ -105,7 +105,8 @@ def collect_events(sents, cues, audio=None, screen=None):
         ev.append({'t': s['start'], 'end': s['end'], 'src': 'text', 'kind': kind, 'w': round(w, 2)})
     if audio is not None:
         for e in audio.events:
-            base = {'scream': 1.2, 'laughter': 1.2, 'raised_voice': 0.7, 'spike': 0.6, 'loud': 0.45}.get(e['kind'], 0.5)
+            base = {'scream': 1.2, 'laughter': 1.2, 'explosion': 0.9, 'cheer': 0.8, 'raised_voice': 0.7,
+                    'gunshot': 0.6, 'spike': 0.6, 'loud': 0.45}.get(e['kind'], 0.5)
             ev.append({'t': e['start'], 'end': e['end'], 'src': 'audio', 'kind': e['kind'],
                        'w': round(base * min(1.5, 0.6 + 0.5 * e['strength']), 2)})
     if screen is not None:

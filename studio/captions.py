@@ -28,6 +28,11 @@ STYLES = {
                'shadow': 2, 'upper': True, 'box': False, 'max_words': 1, 'highlight': False, 'key_highlight': True,
                'anim': 'pop', 'wk': 0.64},
 }
+# caption font choices -> (font family name for libass, bold flag). Montserrat ships with ClipForge (studio/fonts,
+# SIL OFL), Arial Black / Arial / Impact are standard Windows fonts.
+FONTS = {'Montserrat': ('Montserrat Black', 0), 'Arial Black': ('Arial Black', 0), 'Arial': ('Arial', 1),
+         'Impact': ('Impact', 0)}
+FONTS_DIR = __import__('pathlib').Path(__file__).resolve().parent / 'fonts'
 STYLE_CHOICES = [('classic', 'Classic (как в v4, резервный)')] + [(k, v['label']) for k, v in STYLES.items()]
 DEFAULT_STYLE = 'clean'
 
@@ -139,6 +144,37 @@ def _key_words(words):
     return {k for k in keys if k}
 
 
+MILD = {'бляха', 'бляху', 'бляхи', 'бляхой', 'damn'}     # euphemisms that are not masked
+
+
+def censor_word(text):
+    """'бля!' -> 'б**!' ; words that are not swearing are returned unchanged."""
+    from . import moments
+    m = re.match(r'^(\W*)(\w[\w*]*)(\W*)$', text or '', re.U)
+    if not m or '*' in m.group(2):
+        return text
+    word = m.group(2)
+    low = word.lower().replace('ё', 'е')
+    if low in MILD or not moments.CUES['profanity'].fullmatch(low):
+        return text
+    return m.group(1) + word[0] + '*' * (len(word) - 1) + m.group(3)
+
+
+def censor_text(text):
+    return ' '.join(censor_word(w) for w in (text or '').split(' '))
+
+
+def censor_segments(segments):
+    """Copy of a transcript with swear words masked in both the words and the segment texts."""
+    out = []
+    for seg in segments or []:
+        s2 = dict(seg, text=censor_text(seg.get('text', '')))
+        if seg.get('words'):
+            s2['words'] = [dict(w, text=censor_word(w.get('text', ''))) for w in seg['words']]
+        out.append(s2)
+    return out
+
+
 def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE, max_words=None,
               margin_for=None, animate=True, highlight=None, font=None):
     """Write an ASS file for [start,end) (times shifted to 0). Returns a report dict.
@@ -146,7 +182,11 @@ def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE
     margin_for(t_rel) -> MarginV in px at the *output* resolution (None -> default safe value).
     """
     st = dict(STYLES.get(style_id) or STYLES[DEFAULT_STYLE])
-    if font:
+    if font in FONTS:
+        st['font'], st['bold'] = FONTS[font]
+        if font in ('Montserrat', 'Arial Black', 'Impact'):
+            st['wk'] = max(st['wk'], 0.66)      # wider glyphs: measure lines with a wider average width
+    elif font:
         st['font'] = font
     scale = W / 1080.0
     size = round(st['size'] * scale)
@@ -252,4 +292,5 @@ def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE
     return {'mode': 'word' if ((do_hl or mwords == 1) and reliable) else 'segment', 'events': len(events), 'shrunk': shrunk,
             'key_words': len(keys),
             'groups': len(groups), 'words_reliable': reliable, 'style': style_id, 'max_words': mwords,
+            'font': st['font'],
             'est_overflow': 0}

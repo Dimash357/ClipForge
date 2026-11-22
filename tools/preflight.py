@@ -126,6 +126,31 @@ def check_js_runtime(which=shutil.which):
     return 0
 
 
+# ------------------------------------------------------------------ models
+def fetch_models():
+    """Download the sound classifier once (16 MB, SHA-256 checked). Never fatal: without it the loudness
+    heuristics are used and the download is retried on first use."""
+    sys.path.insert(0, str(ROOT))
+    try:
+        from studio import model_files
+    except Exception as exc:
+        warn(f'Не удалось проверить модели: {exc}')
+        return 0
+    yunet = ROOT / 'studio' / 'models' / 'face_detection_yunet_2023mar.onnx'
+    (ok if yunet.is_file() else warn)('Детектор лиц YuNet: ' + ('в комплекте' if yunet.is_file() else 'файл не найден — будет Haar'))
+    if model_files.is_ready():
+        ok('Классификатор звуков YAMNet уже скачан')
+        return 0
+    print('     Скачиваю классификатор звуков YAMNet (16 МБ, один раз)...')
+    try:
+        model_files.download()
+        ok(f'YAMNet: {model_files.model_path()}')
+    except Exception as exc:
+        warn(f'YAMNet не скачан ({str(exc)[:150]}). Ничего страшного: скачается при первой обработке, '
+             'а без интернета смех и крики определяются по громкости.')
+    return 0
+
+
 # ------------------------------------------------------------------ dependencies
 def installed_version(dist):
     try:
@@ -253,6 +278,8 @@ def main(argv):
             return 1
     if cmd == 'js':
         return check_js_runtime()
+    if cmd == 'models':
+        return fetch_models()
     if cmd == 'all':
         return check_venv() or check_ffmpeg() or check_deps() or check_js_runtime()
     print(__doc__)

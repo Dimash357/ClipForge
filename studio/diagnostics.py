@@ -192,6 +192,9 @@ def full_report():
         'max_jobs': settings.MAX_CONCURRENT_JOBS,
         'ollama': os.getenv('USE_OLLAMA', '0') == '1',
         'ai': _ai_status(),
+        'faces': _safe(lambda: __import__('studio.faces', fromlist=['x']).status()),
+        'sound': _safe(lambda: __import__('studio.sound_events', fromlist=['x']).status()),
+        'whisper_batch': os.getenv('WHISPER_BATCH', 'auto'),
     }
 
 
@@ -201,3 +204,10 @@ def _ai_status():
         return ai_provider.status()
     except Exception as exc:
         return {'kind': None, 'reason': str(exc)[:100]}
+
+
+def _safe(fn):
+    try:
+        return fn()
+    except Exception as exc:
+        return {'error': str(exc)[:120]}

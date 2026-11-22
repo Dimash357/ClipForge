@@ -201,19 +201,25 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
     transition = opts['transition'] if len(segs) > 1 else 'none'
     for tol in (3.0, 8.0, 20.0):
         ctx['path_tol'] = tol
-        graph, margin_for = layouts.build_graph(segs, ctx, 'captions.ass', transition=transition, fps=fps)
+        graph, margin_for = layouts.build_graph(segs, ctx, 'captions.ass', transition=transition, fps=fps,
+                                                fontsdir='fonts')
         if len(graph) < 24000:
             break
     ass = temp / 'captions.ass'
-    cap_report = {'style': opts['subtitle_style'], 'enabled': opts['captions']}
+    _copy_fonts(temp)
+    if opts.get('caption_censor'):
+        transcript = cap.censor_segments(transcript)
+    cap_report = {'style': opts['subtitle_style'], 'enabled': opts['captions'], 'censor': bool(opts.get('caption_censor'))}
     if not opts['captions']:
         cap.build_ass([], clip['start'], clip['end'], ass, W, H, 'clean')
     elif opts['subtitle_style'] == 'classic':
         pipeline.captions_ass(transcript, clip['start'], clip['end'], ass, margin_v=margin_for(L / 2))
     else:
         cap_report = cap.build_ass(transcript, clip['start'], clip['end'], ass, W, H, opts['subtitle_style'],
+                                   font=None if opts.get('caption_font', 'style') == 'style' else opts['caption_font'],
                                    max_words=opts['caption_words'] or None, margin_for=margin_for,
                                    animate=opts['caption_animate'], highlight=opts['caption_highlight'])
+    cap_report['censor'] = bool(opts.get('caption_censor'))
     af, loud_info = loudness_filter(source, clip['start'], L, opts, vinfo.get('has_audio', True),
                                     cancel=rep.cancelled if rep else None)
     encoder, enc_note = diagnostics.choose_encoder(opts['encoder'])
@@ -291,3 +297,15 @@ def loudness_filter(source, start, length, opts, has_audio=True, cancel=None):
          f"measured_thresh={m['input_thresh']:.2f}:offset={m['target_offset']:.2f}:linear=true,aresample=48000")
     return f, {'target': target['I'], 'mode': 'two-pass', 'measured_i': round(m['input_i'], 1),
                'measured_tp': round(m['input_tp'], 1)}
+
+
+def _copy_fonts(temp):
+    """Bundled fonts next to the ASS file: ffmpeg's ass filter loads them via the relative fontsdir=fonts."""
+    import shutil
+    dst = Path(temp) / 'fonts'
+    dst.mkdir(exist_ok=True)
+    for f in cap.FONTS_DIR.glob('*.ttf'):
+        try:
+            shutil.copy2(f, dst / f.name)
+        except OSError as exc:
+            log.warning('could not copy font %s: %s', f.name, exc)
