@@ -30,16 +30,20 @@
 <div><label>Качество</label><select name="quality">{% for k, q in qualities.items %}<option value="{{ k }}" {% if k == 'balanced' %}selected{% endif %}>{{ q.label }}</option>{% endfor %}</select></div>
 <div><label>FPS <small>выше FPS исходника не поднимается</small></label><select name="fps"><option value="source">Как в исходнике</option><option value="30">30</option><option value="24">24</option><option value="60">60</option></select></div></div>
 <details><summary>Дополнительные настройки</summary>
-<input type="hidden" name="present_review_first" value="1"><input type="hidden" name="present_smart_tracking" value="1"><input type="hidden" name="present_hide_cam" value="1"><input type="hidden" name="present_caption_animate" value="1"><input type="hidden" name="present_text_guard" value="1">
+<input type="hidden" name="present_review_first" value="1"><input type="hidden" name="present_smart_tracking" value="1"><input type="hidden" name="present_hide_cam" value="1"><input type="hidden" name="present_caption_animate" value="1"><input type="hidden" name="present_text_guard" value="1"><input type="hidden" name="present_highlight_audio" value="1"><input type="hidden" name="present_highlight_motion" value="1">
 <div class="grid2"><div><label>Фон для горизонтального видео</label><select name="bg_fill"><option value="blur">Размытый фон (рекомендуется)</option><option value="solid">Однотонный фон</option><option value="focus">Gameplay Focus (небольшой зум)</option></select></div>
 <div><label>Переходы между сценами (Director)</label><select name="transition"><option value="none">Без переходов (чёткий монтаж)</option><option value="fade">Лёгкое затухание 0.25 с</option></select></div>
 <div><label>Если Director не уверен в сцене</label><select name="director_fallback"><option value="gameplay">Gameplay (вся картинка + размытие)</option><option value="smart">Smart Reframe</option></select></div>
 <div><label>Кодирование</label><select name="encoder"><option value="auto">Авто (NVENC, если проверка прошла)</option><option value="cpu">Только CPU (libx264)</option></select></div>
 <div><label>Слов в субтитрах <small>0 = по стилю</small></label><input type="number" name="caption_words" min="0" max="6" value="0"></div>
-<div><label>Поиск моментов</label><select name="highlight_engine"><option value="smart">Улучшенный (оценки Hook / Context / Engagement / Completeness)</option><option value="classic">Классический алгоритм v4</option></select></div></div>
+<div><label>Поиск моментов</label><select name="highlight_engine"><option value="smart">Улучшенный (оценки Hook / Context / Engagement / Completeness)</option><option value="classic">Классический алгоритм v4</option></select></div>
+<div><label>Игра в Gameplay + Facecam</label><select name="cam_fit"><option value="balanced">Баланс: крупнее, обрезка по бокам до 16% (рекомендуется)</option><option value="full">Вся картинка без обрезки</option><option value="fill">Крупно: обрезка по бокам до 30%</option></select></div>
+<div><label>Как убрать вебку из игры</label><select name="cam_fill"><option value="mirror">Кадрирование + восстановление из соседней области (без блюра)</option><option value="blur">Затемнённая пикселизация (как в v5)</option></select></div></div>
 <label class="check"><input type="checkbox" name="review_first"> Сначала показать найденные фрагменты, затем рендерить после моего подтверждения (предпросмотр и правка границ)</label>
 <label class="check"><input type="checkbox" name="smart_tracking" checked> Плавно следить за лицом в Smart Reframe</label>
 <label class="check"><input type="checkbox" name="hide_cam" checked> В Gameplay + Facecam скрывать камеру в игровой панели (без дубля лица)</label>
+<label class="check"><input type="checkbox" name="highlight_audio" checked> Искать моменты и по звуку: смех, крики, всплески громкости, паузы</label>
+<label class="check"><input type="checkbox" name="highlight_motion" checked> Учитывать динамику геймплея (движение, смены сцен) у лучших кандидатов</label>
 <label class="check"><input type="checkbox" name="text_guard" checked> Не обрезать вшитые титры/субтитры исходника (Smart переключится на весь кадр)</label>
 <label class="check"><input type="checkbox" name="caption_animate" checked> Анимация появления субтитров</label></details>
 <label class="check" style="margin-top:16px"><input type="checkbox" name="rights" required> У меня есть право на обработку и экспорт этого видео.</label>

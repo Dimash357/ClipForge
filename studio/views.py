@@ -24,8 +24,10 @@ CORNERS = ('auto', 'top_left', 'top_right', 'bottom_left', 'bottom_right')
 LENGTHS = {'short': (15, 32), 'standard': (20, 55), 'long': (45, 90)}
 OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'caption_words', 'caption_animate', 'bg_fill',
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
-                 'review_first', 'captions', 'caption_highlight', 'text_guard')
-CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard')
+                 'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
+                 'highlight_audio', 'highlight_motion')
+CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
+              'highlight_motion')
 
 
 def _ctx_index(**extra):

@@ -65,8 +65,8 @@ function renderReview(d) {
 }
 function scoreBars(sc) {
   if (!sc || sc.hook == null) return null;
-  const names = {hook: 'Hook', context: 'Context', engagement: 'Engagement', completeness: 'Completeness'};
-  return h('div', {class: 'row'}, Object.entries(names).map(([k, n]) => h('span', {class: 'chip', text: `${n} ${sc[k]}`})));
+  const names = {hook: 'Hook', context: 'Context', engagement: 'Engagement', completeness: 'Completeness', audio: 'Звук/эмоции', action: 'Динамика'};
+  return h('div', {class: 'row'}, Object.entries(names).filter(([k]) => sc[k] != null).map(([k, n]) => h('span', {class: 'chip', text: `${n} ${sc[k]}`})));
 }
 function candCard(c, d) {
   const v = h('video', {controls: true, preload: 'metadata', src: `${d.source_url}#t=${c.start},${c.end}`});

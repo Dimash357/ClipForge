@@ -134,3 +134,49 @@ def make_video(path, timeline=TIMELINE, audio=True, corner='top_right'):
     proc.stdin.close()
     proc.wait()
     return path
+
+
+# ------------------------------------------------------------------ audio for the highlight scorer (v5.1)
+SR = 16000
+
+
+def _harm(t, f0, n=6):
+    return sum(np.sin(2 * np.pi * f0 * k * t) / k for k in range(1, n))
+
+
+def speech_like(dur, f0=140, amp=0.05):
+    """Calm voiced 'speech': harmonic tone with a 3.5 Hz syllable envelope."""
+    t = np.arange(int(dur * SR)) / SR
+    return (amp * (0.5 + 0.5 * np.sin(2 * np.pi * 3.5 * t) ** 2) * _harm(t, f0)).astype(np.float32)
+
+
+def scream_like(dur, seed=1):
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(dur * SR)) / SR
+    return (0.5 * _harm(t, 420, 8) + 0.05 * rng.standard_normal(len(t))).astype(np.float32)
+
+
+def laugh_like(dur, seed=2):
+    rng = np.random.default_rng(seed)
+    t = np.arange(int(dur * SR)) / SR
+    env = (np.sin(2 * np.pi * 5 * t) > 0.3).astype(np.float32)
+    return (0.35 * env * _harm(t, 260) + 0.08 * env * rng.standard_normal(len(t))).astype(np.float32)
+
+
+def silence(dur):
+    return np.zeros(int(dur * SR), np.float32)
+
+
+def make_av(path, signal, size='320x180'):
+    """Tiny test video (lavfi) muxed with a mono 16 kHz signal."""
+    import tempfile
+    path = Path(path)
+    with tempfile.TemporaryDirectory() as td:
+        raw = Path(td) / 'a.raw'
+        (np.clip(signal, -1, 1) * 32767).astype('<i2').tofile(raw)
+        dur = len(signal) / SR
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-f', 'lavfi', '-i',
+                        f'testsrc2=size={size}:rate=10:duration={dur:.2f}', '-f', 's16le', '-ar', str(SR), '-ac', '1',
+                        '-i', str(raw), '-c:v', 'libx264', '-preset', 'ultrafast', '-c:a', 'aac', '-shortest', str(path)],
+                       check=True)
+    return path

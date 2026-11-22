@@ -28,14 +28,18 @@ DEFAULTS = {
     'bg_fill': 'blur', 'director_fallback': 'gameplay', 'transition': 'none', 'smart_tracking': True,
     'hide_cam': True, 'cam_position': 'bottom', 'highlight_engine': 'smart', 'review_first': False,
     'gameplay_zoom': 1.0, 'text_guard': True,
+    # v5.1: Gameplay + Facecam geometry / duplicate-webcam removal, multimodal highlight scoring
+    'cam_fit': 'balanced', 'cam_fill': 'mirror', 'highlight_audio': True, 'highlight_motion': True,
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
     'encoder': {'auto', 'cpu'}, 'subtitle_style': set(STYLES) | {'classic'},
     'bg_fill': {'blur', 'solid', 'focus'}, 'director_fallback': {'gameplay', 'smart'},
     'transition': {'none', 'fade'}, 'cam_position': {'bottom', 'top'}, 'highlight_engine': {'smart', 'classic'},
+    'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'},
 }
-BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard')
+BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
+         'highlight_motion')
 
 
 def _b(v):

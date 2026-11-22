@@ -6,6 +6,8 @@ The legacy `pipeline.candidates()` stays as the fallback (see pipeline.pick_high
 import logging
 import re
 
+from . import audio_analysis as audio_mod
+from . import motion_analysis as motion_mod
 from . import textutil as tx
 
 log = logging.getLogger('studio.highlights')
@@ -80,7 +82,7 @@ def _sentence_features(s):
     }
 
 
-def _gen_candidates(sents, feats, words_total, minlen, maxlen):
+def _gen_candidates(sents, feats, words_total, minlen, maxlen, min_words=15):
     out = []
     n = len(sents)
     limit = maxlen - 0.5
@@ -93,7 +95,7 @@ def _gen_candidates(sents, feats, words_total, minlen, maxlen):
             if length > limit:
                 break
             nw += feats[j]['n']
-            if length < minlen or nw < 15:
+            if length < minlen or nw < min_words:
                 continue
             out.append((i, j, length, nw))
     return out
@@ -224,6 +226,24 @@ def explain(scores, facts, lang='ru'):
         parts.append('есть вывод в конце' if ru else 'closes with a conclusion')
     if 'coherent' in f:
         parts.append('единая тема от начала до конца' if ru else 'one consistent topic throughout')
+    if 'laughter' in f:
+        parts.append('смех в звуке' if ru else 'laughter in the audio')
+    if 'scream' in f:
+        parts.append('крик / громкая реакция' if ru else 'a scream / loud reaction')
+    if 'raised_voice' in f:
+        parts.append('голос повышается' if ru else 'raised voice')
+    if 'volume_spike' in f:
+        parts.append('резкий всплеск громкости' if ru else 'a sudden volume spike')
+    if 'dramatic_pause' in f:
+        parts.append('пауза перед взрывом эмоций' if ru else 'a dramatic pause before the burst')
+    if 'fast_action' in f or 'action_burst' in f:
+        parts.append('активный геймплей / резкие движения' if ru else 'intense gameplay / sudden motion')
+    if 'scene_change' in f:
+        parts.append(f'смены сцен ({f["scene_change"]})' if ru else f'scene changes ({f["scene_change"]})')
+    if 'kept_reaction' in f:
+        parts.append('реакция сохранена целиком' if ru else 'the full reaction is kept')
+    if 'kept_lead_in' in f:
+        parts.append('сохранён момент перед реакцией' if ru else 'the lead-in before the reaction is kept')
     warns = []
     if 'weak_start' in f:
         warns.append('начало опирается на предыдущий контекст' if ru else 'the opening leans on earlier context')
@@ -231,6 +251,12 @@ def explain(scores, facts, lang='ru'):
         warns.append('конец может обрываться на союзе' if ru else 'may end on a dangling word')
     if 'long_pause' in f:
         warns.append(f'внутри есть пауза {f["long_pause"]} с' if ru else f'contains a {f["long_pause"]}s pause')
+    if 'monotone' in f:
+        warns.append('ровная громкость без всплесков' if ru else 'flat loudness, no bursts')
+    if 'static_picture' in f:
+        warns.append('картинка почти статична' if ru else 'the picture is mostly static')
+    if 'repetitive' in f:
+        warns.append('много повторов в речи' if ru else 'a lot of repetition in speech')
     head = ('Выбран, потому что: ' if ru else 'Picked because: ') + ('; '.join(parts) if parts else
             ('нет ярких маркеров, лучший вариант по общей оценке' if ru else 'no standout markers; best overall candidate'))
     if warns:
@@ -257,8 +283,82 @@ def _pad_bounds(words, i0, i1, sents, i, j, duration):
     return round(start, 2), round(end, 2)
 
 
-def find_highlights(segments, duration, minlen=20, maxlen=55, count=3, pool_size=400, diversity=0.35, rerank=None):
-    """Returns a list of selected highlight dicts, best first. Empty list => caller falls back to legacy."""
+# weights of the combined interest score (text = the v5 Hook/Context/Engagement/Completeness overall)
+MM_WEIGHTS = {
+    (True, True): (0.50, 0.33, 0.17),     # (audio?, action?) -> (text, audio, action)
+    (True, False): (0.60, 0.40, 0.0),
+    (False, True): (0.80, 0.0, 0.20),
+    (False, False): (1.0, 0.0, 0.0),
+}
+
+
+def combine(text, audio=None, action=None):
+    wt, wa, wv = MM_WEIGHTS[(audio is not None, action is not None)]
+    return wt * text + wa * (audio or 0.0) + wv * (action or 0.0)
+
+
+def _repetition(text):
+    toks = tx.tokens(text)
+    if len(toks) < 20:
+        return 1.0
+    return len(set(toks)) / len(toks)
+
+
+def _strong_audio(af):
+    return bool(af) and (af['strong'] > 0 or af['top'] >= 0.9)
+
+
+def _refine_bounds(c, sents, words, audio, duration, maxlen):
+    """Never cut a reaction or its cause: extend the end over a running reaction / a late peak, and the start
+    back over the lead-in when the clip opens on a burst. Words are never cut in half."""
+    i, j = c['sent_range']
+    start, end = c['start'], c['end']
+    facts = []
+    evs = audio.events_in(start - 2.0, end + 6.0)
+    # ---- end: reaction still running, or the loudest moment sits at the very end
+    want_end = end
+    for e in evs:
+        if e['start'] < end and e['end'] > end - 0.3:
+            want_end = max(want_end, min(e['end'] + 0.4, end + 4.0))
+    af = c.get('_af')
+    if af and af['strong'] and af['peak_t'] >= end - 1.2:
+        want_end = max(want_end, min(af['peak_t'] + 1.5, end + 4.0))
+    if want_end > end + 0.05:
+        nxt = next((w['start'] for w in words if w['start'] >= end - 1e-6), duration)
+        if nxt < want_end and j + 1 < len(sents) and sents[j + 1]['end'] + 0.3 - start <= maxlen + 3:
+            # the reaction is spoken ("OH MY GOD!") -> keep the whole next sentence
+            j += 1
+            want_end = max(want_end, sents[j]['end'] + 0.3)
+            nxt = next((w['start'] for w in words if w['start'] >= sents[j]['end'] - 1e-6), duration)
+        new_end = round(min(want_end, nxt - 0.02, duration), 2)
+        if new_end > end + 0.05:
+            end = new_end
+            facts.append(('kept_reaction', None))
+    # ---- start: the clip opens on a burst -> keep what caused it (the gameplay moment right before)
+    first_burst = next((e for e in evs if e['end'] > start and e['start'] <= start + 0.8 and
+                        (e['strength'] >= 0.8 or e['kind'] in ('scream', 'laughter', 'spike'))), None)
+    if first_burst:
+        want = max(first_burst['start'] - 1.5, start - 4.0, 0.0)
+        prv = max((w['end'] for w in words if w['end'] <= start + 1e-6), default=0.0)
+        new_start = round(max(want, prv + 0.02 if prv > 0 else 0.0), 2)
+        if new_start < start - 0.05:
+            start = new_start
+            facts.append(('kept_lead_in', None))
+    if j != c['sent_range'][1]:
+        c['text'] = ' '.join(s['text'] for s in sents[i:j + 1])
+    c['start'], c['end'] = start, end
+    c['sent_range'] = (i, j)
+    c['facts'] = list(c['facts']) + facts
+
+
+def find_highlights(segments, duration, minlen=20, maxlen=55, count=3, pool_size=400, diversity=0.35, rerank=None,
+                    audio=None, motion=None, motion_top=12):
+    """Returns a list of selected highlight dicts, best first. Empty list => caller falls back to legacy.
+
+    audio:  optional audio_analysis.AudioProfile of the whole source (laughter, screams, spikes, pauses...)
+    motion: optional callable([(start, end)]) -> motion_analysis.MotionProfile, run only on the best candidates.
+    Without them the ranking is exactly the transcript-only v5 ranking.
+    """
     words = tx.flat_words(segments)
     if len(words) < 15:
         return []
@@ -266,32 +366,115 @@ def find_highlights(segments, duration, minlen=20, maxlen=55, count=3, pool_size
     if len(sents) < 2:
         return []
     feats = [_sentence_features(s) for s in sents]
-    gen = _gen_candidates(sents, feats, len(words), minlen, maxlen)
+    # reactions are often short on words (screams, laughter): with audio, sparse spans may qualify if they are loud
+    gen = _gen_candidates(sents, feats, len(words), minlen, maxlen, min_words=8 if audio is not None else 15)
     if not gen:
         return []
     scored = []
     for (i, j, length, nw) in gen:
+        af = None
+        if audio is not None:
+            # a reaction right after the last words (laughing, screaming) belongs to the moment
+            nxt = sents[j + 1]['start'] if j + 1 < len(sents) else duration
+            tail = max(0.0, min(2.5, nxt - sents[j]['end'] - 0.05))
+            af = audio_mod.span_features(audio, max(0.0, sents[i]['start'] - 0.3), sents[j]['end'] + tail)
+            if nw < 15 and not _strong_audio(af):
+                continue
         sc, facts = _score(i, j, length, nw, sents, feats, minlen, maxlen)
-        scored.append((sc['overall'], i, j, length, nw, sc, facts))
+        text_overall = sc['overall']
+        overall = text_overall
+        if af is not None:
+            a_sc, a_facts = audio_mod.audio_score(af)
+            if a_sc is not None:
+                facts = list(facts) + a_facts
+                if af['longest_pause'] < 1.0 and any(k == 'long_pause' for k, _ in facts):
+                    # the transcript has a gap, but the audio is not silent there (game sound, laughter...)
+                    facts = [x for x in facts if x[0] != 'long_pause']
+                    text_overall = min(100.0, text_overall + 4)
+                sc = dict(sc, audio=round(a_sc))
+                overall = combine(text_overall, a_sc)
+                if a_sc < 35 and sc['engagement'] < 45:
+                    overall -= 6
+                    facts.append(('boring', None))
+        scored.append([overall, i, j, length, nw, sc, facts, af, text_overall])
+    if not scored:
+        return []
     scored.sort(key=lambda x: x[0], reverse=True)
     pool = scored[:pool_size]
     lang = tx.detect_lang(' '.join(s['text'] for s in sents[:200]))
 
     cands = []
-    for overall, i, j, length, nw, sc, facts in pool:
+    for overall, i, j, length, nw, sc, facts, af, text_overall in pool:
         start, end = _pad_bounds(words, 0, 0, sents, i, j, duration)
         text = ' '.join(s['text'] for s in sents[i:j + 1])
-        cands.append({'start': start, 'end': end, 'text': text, 'score': overall, 'scores': sc, 'facts': facts,
-                      'kw': set().union(*[feats[k]['kw'] for k in range(i, j + 1)]), 'sent_range': (i, j)})
+        rep = _repetition(text)
+        if rep < 0.4:
+            overall -= 8
+            facts = list(facts) + [('repetitive', round(rep, 2))]
+        cands.append({'start': start, 'end': end, 'text': text, 'score': round(overall, 1), 'scores': sc, 'facts': facts,
+                      'kw': set().union(*[feats[k]['kw'] for k in range(i, j + 1)]), 'sent_range': (i, j),
+                      '_af': af, '_text': text_overall, '_audio': sc.get('audio')})
+    if motion is not None:
+        _apply_motion(cands, motion, motion_top)
+    for c in cands:
+        if 'audio' in c['scores'] or 'action' in c['scores']:
+            c['scores'] = dict(c['scores'], overall=round(_clamp(c['score']), 1))
+    cands.sort(key=lambda c: c['score'], reverse=True)
     if rerank:
         try:
             cands = rerank(cands)
         except Exception:
             log.exception('rerank failed')
-    return _select_diverse(cands, count, diversity, lang)
+    chosen = _select_diverse(cands, count, diversity, lang, finalize=False)
+    if audio is not None:
+        for c in chosen:
+            try:
+                _refine_bounds(c, sents, words, audio, duration, maxlen)
+            except Exception:
+                log.exception('boundary refinement failed')
+    for c in chosen:
+        c['reason'] = explain(c['scores'], c['facts'], lang)
+        c['lang'] = lang
+        for k in ('kw', '_af', '_text', '_audio'):
+            c.pop(k, None)
+    return chosen
 
 
-def _select_diverse(cands, count, diversity, lang):
+def _apply_motion(cands, motion, top_n):
+    """Measure gameplay dynamics on the best (non-overlapping) candidates and fold it into their score."""
+    probe = []
+    for c in cands:
+        if len(probe) >= top_n:
+            break
+        if any(min(c['end'], p['end']) - max(c['start'], p['start']) > 0.5 * (c['end'] - c['start']) for p in probe):
+            continue
+        probe.append(c)
+    if not probe:
+        return
+    try:
+        mp = motion([(p['start'], p['end']) for p in probe])
+    except Exception as exc:
+        from .procutil import JobCancelled
+        if isinstance(exc, JobCancelled):
+            raise
+        log.warning('motion analysis failed (%s); ranking without gameplay dynamics', str(exc)[:200])
+        return
+    if mp is None:
+        return
+    for c in cands:
+        if not mp.covers(c['start'], c['end']):
+            continue
+        f = mp.span(c['start'], c['end'])
+        v_sc, v_facts = motion_mod.action_score(f)
+        if v_sc is None:
+            continue
+        c['scores'] = dict(c['scores'], action=round(v_sc))
+        c['facts'] = list(c['facts']) + v_facts
+        bonus = c['score'] - combine(c['_text'], c['_audio'])       # repetition / boring adjustments
+        c['score'] = round(combine(c['_text'], c['_audio'], v_sc) + bonus, 1)
+
+
+def _select_diverse(cands, count, diversity, lang, finalize=True):
     chosen = []
     remaining = list(cands)
     while remaining and len(chosen) < count:
@@ -313,8 +496,9 @@ def _select_diverse(cands, count, diversity, lang):
         best['diversity_penalty'] = round(best['score'] - best_adj, 1)
         chosen.append(best)
         remaining = [c for c in remaining if c is not best]
-    for c in chosen:
-        c['reason'] = explain(c['scores'], c['facts'], lang)
-        c['lang'] = lang
-        c.pop('kw', None)
+    if finalize:
+        for c in chosen:
+            c['reason'] = explain(c['scores'], c['facts'], lang)
+            c['lang'] = lang
+            c.pop('kw', None)
     return chosen

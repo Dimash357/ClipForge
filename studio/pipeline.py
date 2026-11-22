@@ -305,7 +305,7 @@ import hashlib
 import logging
 import time
 
-from . import diagnostics, editor, exports, highlights, metadata, quality, textutil as tx
+from . import audio_analysis, diagnostics, editor, exports, highlights, metadata, motion_analysis, quality, textutil as tx
 from .jobs import set_state
 from .procutil import JobCancelled
 
@@ -336,17 +336,58 @@ def clip_text(segments, start, end):
     return ' '.join(s['text'] for s in segments if s['end'] > start and s['start'] < end)
 
 
-def pick_highlights(segments, duration, p, opts):
+def highlight_signals(source, duration, opts, vinfo=None, rep=None):
+    """Audio profile + lazy gameplay-motion probe for the multimodal ranker. Never raises (except cancel):
+    a broken/absent audio track or a decoder problem just means "rank on the transcript only"."""
+    audio = motion = None
+    notes = []
+    if source is None:
+        return audio, motion, notes
+    cancel = rep.cancelled if rep else None
+    if opts.get('highlight_audio', True):
+        try:
+            audio = audio_analysis.analyze_file(
+                source, duration, cancel=cancel,
+                progress=(lambda f: rep.frac(0.8 * f, f'Слушаем звук: смех, крики, всплески... {int(f * 100)}%')) if rep else None)
+            if audio is None:
+                notes.append('no_audio')
+            else:
+                log.info('audio profile: %s', audio.summary())
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            log.warning('audio analysis failed (%s); ranking on the transcript only', str(exc)[:300])
+            notes.append('audio_failed')
+            audio = None
+    if opts.get('highlight_motion', True) and vinfo:
+        def motion(spans):
+            if rep:
+                rep.frac(0.85, 'Оцениваем динамику геймплея у лучших кандидатов...')
+            return motion_analysis.analyze_spans(source, spans, vinfo['width'], vinfo['height'], cancel=cancel)
+    return audio, motion, notes
+
+
+def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None):
     """New ranker first; the proven v4 algorithm is the fallback when it errors or finds nothing."""
     if opts['highlight_engine'] == 'smart':
         try:
+            audio, motion, _ = highlight_signals(source, duration, opts, vinfo, rep)
+        except JobCancelled:
+            raise
+        except Exception:
+            log.exception('highlight signals failed')
+            audio = motion = None
+        try:
             sel = highlights.find_highlights(segments, duration, p.clip_min, p.clip_max, p.clip_count,
-                                             rerank=ollama_rank if os.getenv('USE_OLLAMA', '0') == '1' else None)
+                                             rerank=ollama_rank if os.getenv('USE_OLLAMA', '0') == '1' else None,
+                                             audio=audio, motion=motion)
             if sel:
                 for c in sel:
                     c['engine'] = 'smart'
                 return sel
             log.info('smart highlights found nothing; using classic ranker')
+        except JobCancelled:
+            raise
         except Exception:
             log.exception('smart highlights failed; using classic ranker')
     ranked = ollama_rank(candidates(segments, duration, p.clip_min, p.clip_max))
@@ -454,7 +495,7 @@ def _run_full(pk, rep, payload):
     p.refresh_from_db()
     segments = _get_transcript(p, source, duration, fp, rep)
     rep.stage('highlights', 'Ищем интересные моменты...', frac=None)
-    selected = pick_highlights(segments, duration, p, opts)
+    selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep)
     if not selected:
         raise ValueError('Не удалось найти подходящие фрагменты. Попробуйте видео длиннее или с более плотной речью.')
     # Replace previous results only now that a new selection exists (a failed rerun never wipes old clips).

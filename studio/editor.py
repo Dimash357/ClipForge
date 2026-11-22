@@ -149,7 +149,7 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
     segs = plan['segments']
     ctx = {'W': W, 'H': H, 'src_w': vinfo['width'], 'src_h': vinfo['height'], 'bg': opts['bg_fill'],
            'zoom': opts['gameplay_zoom'], 'cam': plan.get('cam'), 'cam_position': opts['cam_position'],
-           'hide_cam': opts['hide_cam'], 'path_tol': 3.0}
+           'hide_cam': opts['hide_cam'], 'cam_fit': opts['cam_fit'], 'cam_fill': opts['cam_fill'], 'path_tol': 3.0}
     fps = None
     if opts['fps'] != 'source' and int(opts['fps']) < vinfo['fps'] - 0.5:
         fps = int(opts['fps'])
