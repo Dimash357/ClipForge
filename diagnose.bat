@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
 cd /d "%~dp0"
-call .venv\Scripts\activate
-python manage.py diagnose
+if not exist .venv\Scripts\python.exe (echo [!] .venv not found. Run setup.bat first. & pause & exit /b 1)
+"%~dp0.venv\Scripts\python.exe" manage.py diagnose
 pause
