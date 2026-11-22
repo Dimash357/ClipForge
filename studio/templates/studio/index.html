@@ -1,0 +1,53 @@
+{% extends "studio/base.html" %}
+{% block title %}ClipForge Studio{% endblock %}
+{% block body %}
+<section class="hero"><div class="eyebrow">AI VIDEO STUDIO</div><h1>Long videos.<br><em>Short stories.</em></h1>
+<p>Превращайте разрешённые видео в вертикальные Shorts: поиск моментов, автоматический выбор раскладки по сценам, субтитры. Всё считается на вашем ПК.</p></section>
+<form method="post" enctype="multipart/form-data" id="newform">{% csrf_token %}
+<div class="panel"><h2>1 · Источник</h2>{% if error %}<div class="error">{{ error }}</div>{% endif %}
+<label>YouTube-ссылка <small>для метаданных и получения разрешённого видео</small></label>
+<div class="urlrow"><input id="youtube_url" type="url" name="youtube_url" placeholder="https://www.youtube.com/watch?v=..."><button type="button" class="secondary" id="lookupbtn">Проверить</button></div>
+<div id="meta" class="meta"></div><div id="source_status" class="hint"></div>
+<label>Или загрузите файл <small>MP4 / MOV / MKV / WEBM, до 1 ГБ</small></label><input type="file" name="source" accept=".mp4,.mov,.mkv,.webm">
+<label class="check"><input type="checkbox" name="auto_fetch" checked> Автоматически получить видео по ссылке (только если у меня есть права и доступ разрешён условиями YouTube).</label></div>
+
+<div class="panel"><h2>2 · Монтаж</h2>
+<div class="grid2"><div><label>Режим монтажа</label><select name="edit_mode">
+{% for k, label in edit_modes %}<option value="{{ k }}" {% if k == 'smart' %}selected{% endif %}>{% if k == 'director' or k == 'fullframe' %}★ {% endif %}{{ label }}</option>{% endfor %}</select>
+<div class="hint" style="margin-top:6px">★ «Без обрезки» показывает весь кадр целиком (для фильмов, интервью, видео с вшитыми титрами). ★ Director сам определяет сцены (игра / лицо / игра+камера / экран) и переключает раскладку внутри ролика.</div></div>
+<div><label>Расположение facecam в исходнике</label><select name="facecam_corner"><option value="auto">Определить автоматически</option><option value="top_left">Сверху слева</option><option value="top_right">Сверху справа</option><option value="bottom_left">Снизу слева</option><option value="bottom_right">Снизу справа</option></select></div></div>
+<div class="grid3"><div><label>Язык речи</label><select name="language"><option value="auto">Определить автоматически</option><option value="ru">Русский</option><option value="en">English</option></select></div>
+<div><label>Количество клипов</label><select name="clip_count"><option>3</option><option>5</option><option>8</option></select></div>
+<div><label>Длительность клипа</label><select name="clip_length"><option value="short">Короткие (15–32 с)</option><option value="standard" selected>Стандарт (20–55 с)</option><option value="long">Длинные (45–90 с)</option></select></div></div></div>
+
+<div class="panel"><h2>3 · Стиль субтитров</h2>
+<input type="hidden" name="present_captions" value="1">
+<div class="stylepick">{% for k, label in styles %}<label><input type="radio" name="subtitle_style" value="{{ k }}" {% if k == defaults.subtitle_style %}checked{% endif %}><span class="sty"><span class="sample st-{{ k }}">Это <i>пример</i></span><small>{{ label }}</small></span></label>{% endfor %}</div>
+<label class="check" style="margin-top:14px"><input type="checkbox" name="captions" checked> Добавлять субтитры в клипы</label></div>
+
+<div class="panel"><h2>4 · Экспорт</h2><div class="grid3">
+<div><label>Разрешение</label><select name="preset">{% for k, p in presets.items %}<option value="{{ k }}">{{ p.label }}</option>{% endfor %}</select></div>
+<div><label>Качество</label><select name="quality">{% for k, q in qualities.items %}<option value="{{ k }}" {% if k == 'balanced' %}selected{% endif %}>{{ q.label }}</option>{% endfor %}</select></div>
+<div><label>FPS <small>выше FPS исходника не поднимается</small></label><select name="fps"><option value="source">Как в исходнике</option><option value="30">30</option><option value="24">24</option><option value="60">60</option></select></div></div>
+<details><summary>Дополнительные настройки</summary>
+<input type="hidden" name="present_review_first" value="1"><input type="hidden" name="present_smart_tracking" value="1"><input type="hidden" name="present_hide_cam" value="1"><input type="hidden" name="present_caption_animate" value="1"><input type="hidden" name="present_text_guard" value="1">
+<div class="grid2"><div><label>Фон для горизонтального видео</label><select name="bg_fill"><option value="blur">Размытый фон (рекомендуется)</option><option value="solid">Однотонный фон</option><option value="focus">Gameplay Focus (небольшой зум)</option></select></div>
+<div><label>Переходы между сценами (Director)</label><select name="transition"><option value="none">Без переходов (чёткий монтаж)</option><option value="fade">Лёгкое затухание 0.25 с</option></select></div>
+<div><label>Если Director не уверен в сцене</label><select name="director_fallback"><option value="gameplay">Gameplay (вся картинка + размытие)</option><option value="smart">Smart Reframe</option></select></div>
+<div><label>Кодирование</label><select name="encoder"><option value="auto">Авто (NVENC, если проверка прошла)</option><option value="cpu">Только CPU (libx264)</option></select></div>
+<div><label>Слов в субтитрах <small>0 = по стилю</small></label><input type="number" name="caption_words" min="0" max="6" value="0"></div>
+<div><label>Поиск моментов</label><select name="highlight_engine"><option value="smart">Улучшенный (оценки Hook / Context / Engagement / Completeness)</option><option value="classic">Классический алгоритм v4</option></select></div></div>
+<label class="check"><input type="checkbox" name="review_first"> Сначала показать найденные фрагменты, затем рендерить после моего подтверждения (предпросмотр и правка границ)</label>
+<label class="check"><input type="checkbox" name="smart_tracking" checked> Плавно следить за лицом в Smart Reframe</label>
+<label class="check"><input type="checkbox" name="hide_cam" checked> В Gameplay + Facecam скрывать камеру в игровой панели (без дубля лица)</label>
+<label class="check"><input type="checkbox" name="text_guard" checked> Не обрезать вшитые титры/субтитры исходника (Smart переключится на весь кадр)</label>
+<label class="check"><input type="checkbox" name="caption_animate" checked> Анимация появления субтитров</label></details>
+<label class="check" style="margin-top:16px"><input type="checkbox" name="rights" required> У меня есть право на обработку и экспорт этого видео.</label>
+<div class="actions"><button type="submit" class="primary">✦ Generate Shorts</button></div>
+<p class="hint">Если исходника нет в source_library, ClipForge попробует получить его по ссылке. Используйте это только для видео, которые вы вправе скачивать и перерабатывать.</p></div>
+</form>
+<section><h2>Последние проекты <a href="/history/" class="muted" style="font-weight:400;font-size:13px">все →</a></h2>
+{% for p in projects %}<a class="hrow" href="{% url 'project' p.pk %}"><div class="t"><div>{{ p.title }}</div><small>{{ p.created_at|date:"d.m.Y H:i" }}</small></div><span class="badge b-{{ p.status }}">{{ p.status }}</span></a>
+{% empty %}<p class="muted">Пока нет проектов.</p>{% endfor %}</section>
+{% endblock %}
+{% block scripts %}<script src="/static/studio/index.js"></script>{% endblock %}

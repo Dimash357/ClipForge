@@ -1,0 +1,36 @@
+from pathlib import Path
+import os
+BASE_DIR=Path(__file__).resolve().parent.parent
+SECRET_KEY=os.getenv('DJANGO_SECRET_KEY','local-only-development-key-change-before-sharing')
+DEBUG=os.getenv('DJANGO_DEBUG','1')=='1'
+ALLOWED_HOSTS=['127.0.0.1','localhost']
+INSTALLED_APPS=['django.contrib.admin','django.contrib.auth','django.contrib.contenttypes','django.contrib.sessions','django.contrib.messages','django.contrib.staticfiles','studio']
+MIDDLEWARE=['django.middleware.security.SecurityMiddleware','django.contrib.sessions.middleware.SessionMiddleware','django.middleware.common.CommonMiddleware','django.middleware.csrf.CsrfViewMiddleware','django.contrib.auth.middleware.AuthenticationMiddleware','django.contrib.messages.middleware.MessageMiddleware','django.middleware.clickjacking.XFrameOptionsMiddleware']
+ROOT_URLCONF='clipforge.urls'
+TEMPLATES=[{'BACKEND':'django.template.backends.django.DjangoTemplates','DIRS':[],'APP_DIRS':True,'OPTIONS':{'context_processors':['django.template.context_processors.debug','django.template.context_processors.request','django.contrib.auth.context_processors.auth','django.contrib.messages.context_processors.messages']}}]
+WSGI_APPLICATION='clipforge.wsgi.application'
+DATABASES={'default':{'ENGINE':'django.db.backends.sqlite3','NAME':BASE_DIR/'db.sqlite3','OPTIONS':{'timeout':30}}}
+STATIC_URL='static/'
+MEDIA_URL='media/'
+MEDIA_ROOT=BASE_DIR/'media'
+DEFAULT_AUTO_FIELD='django.db.models.BigAutoField'
+DATA_UPLOAD_MAX_MEMORY_SIZE=104857600
+FILE_UPLOAD_MAX_MEMORY_SIZE=2621440
+
+SOURCE_LIBRARY_ROOT=BASE_DIR / "source_library"
+
+# --- ClipForge v5 ---
+# Heavy jobs (whisper / ffmpeg) run through one in-process queue. 1 is right for an 8 GB GPU.
+MAX_CONCURRENT_JOBS = max(1, int(os.getenv('CLIPFORGE_MAX_JOBS', '1')))
+LOG_DIR = BASE_DIR / 'logs'
+LOG_DIR.mkdir(exist_ok=True)
+LOGGING = {
+    'version': 1, 'disable_existing_loggers': False,
+    'formatters': {'std': {'format': '%(asctime)s %(levelname)s %(name)s: %(message)s'}},
+    'handlers': {
+        'console': {'class': 'logging.StreamHandler', 'formatter': 'std'},
+        'file': {'class': 'logging.handlers.RotatingFileHandler', 'filename': str(LOG_DIR / 'clipforge.log'),
+                 'maxBytes': 2_000_000, 'backupCount': 3, 'encoding': 'utf-8', 'formatter': 'std'},
+    },
+    'loggers': {'studio': {'handlers': ['console', 'file'], 'level': os.getenv('CLIPFORGE_LOG_LEVEL', 'INFO')}},
+}

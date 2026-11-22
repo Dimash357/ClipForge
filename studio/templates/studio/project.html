@@ -1,0 +1,33 @@
+{% extends "studio/base.html" %}
+{% block title %}ClipForge — {{ project.title }}{% endblock %}
+{% block body %}
+<div class="row" style="justify-content:space-between;margin-bottom:10px"><div><div class="eyebrow">PROJECT #{{ project.pk }}</div><h1 style="font-size:26px">{{ project.title }}</h1></div><span id="statusbadge" class="badge">…</span></div>
+<div class="panel" id="progresspanel">
+<div class="steps" id="steps">{% for key, label, w in stages %}<div class="step" data-key="{{ key }}"><span class="n">{{ forloop.counter }}</span><b>{{ label }}</b><div class="bar"></div></div>{% endfor %}</div>
+<div class="msg" id="message">Загружаем статус…</div><div class="hint" id="submsg"></div>
+<div id="error" class="error" style="display:none"></div>
+<div class="actions" id="actions"></div></div>
+<section id="reviewpanel" class="panel" style="display:none"><h2>Найденные фрагменты — предпросмотр</h2>
+<p class="hint">Оценки — эвристики для сравнения фрагментов внутри этого видео, а не прогноз вирусности. Отметьте нужные, при необходимости поправьте начало и конец.</p>
+<div class="grid3"><div><label>Режим монтажа</label><select id="rv_mode">{% for k, label in edit_modes %}<option value="{{ k }}" {% if k == project.edit_mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
+<div><label>Стиль субтитров</label><select id="rv_style">{% for k, label in styles %}<option value="{{ k }}" {% if k == opts.subtitle_style %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div style="display:flex;align-items:end"><button class="primary" id="rv_go">▶ Рендерить выбранные</button></div></div>
+<div class="clips" id="candidates" style="margin-top:14px"></div></section>
+<section><h2>Результаты</h2><div class="clips" id="clips"><p class="muted">Клипы появятся после обработки.</p></div></section>
+<dialog id="dlg"><form method="dialog" id="dlgform"><h2 id="dlgtitle">Перемонтировать клип</h2>
+<video id="dlgvideo" controls preload="metadata"></video>
+<div class="grid2"><div><label>Начало, с</label><input type="number" step="0.1" min="0" id="d_start"><button type="button" class="sm" id="d_setstart" style="margin-top:6px">⇤ Взять из плеера</button></div>
+<div><label>Конец, с</label><input type="number" step="0.1" min="0" id="d_end"><button type="button" class="sm" id="d_setend" style="margin-top:6px">⇥ Взять из плеера</button></div></div>
+<div class="grid2"><div><label>Режим монтажа</label><select id="d_mode">{% for k, label in edit_modes %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></div>
+<div><label>Facecam в исходнике</label><select id="d_corner"><option value="auto">Авто</option><option value="top_left">Сверху слева</option><option value="top_right">Сверху справа</option><option value="bottom_left">Снизу слева</option><option value="bottom_right">Снизу справа</option></select></div>
+<div><label>Стиль субтитров</label><select id="d_style">{% for k, label in styles %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></div>
+<div><label>Слов в субтитрах <small>0 = по стилю</small></label><input type="number" id="d_words" min="0" max="6"></div>
+<div><label>Подсветка слов</label><select id="d_hl"><option value="auto">По стилю</option><option value="1">Включена</option><option value="0">Выключена</option></select></div>
+<div><label>Субтитры</label><select id="d_caps"><option value="1">Показывать</option><option value="0">Без субтитров</option></select></div>
+<div><label>Разрешение</label><select id="d_preset">{% for k, p in presets.items %}<option value="{{ k }}">{{ p.label }}</option>{% endfor %}</select></div>
+<div><label>Качество</label><select id="d_quality">{% for k, q in qualities.items %}<option value="{{ k }}">{{ q.label }}</option>{% endfor %}</select></div>
+<div><label>Фон</label><select id="d_bg"><option value="blur">Размытие</option><option value="solid">Однотонный</option><option value="focus">Gameplay Focus</option></select></div>
+<div><label>Переходы</label><select id="d_trans"><option value="none">Без переходов</option><option value="fade">Затухание</option></select></div></div>
+<div id="dlgerr" class="error" style="display:none"></div>
+<div class="actions"><button class="primary" id="d_go" type="button">Перемонтировать</button><button value="cancel" type="submit" class="secondary">Закрыть</button></div></form></dialog>
+{% endblock %}
+{% block scripts %}<script>window.CF={pid:{{ project.pk }}};</script><script src="/static/studio/project.js"></script>{% endblock %}

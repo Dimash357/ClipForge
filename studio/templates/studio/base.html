@@ -1,0 +1,7 @@
+<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{% block title %}ClipForge Studio{% endblock %}</title><link rel="stylesheet" href="/static/studio/app.css"></head><body>
+<main class="container"><div class="topbar"><a class="logo" href="/">✦ <b>ClipForge</b> <span>Studio</span></a>
+<nav class="nav"><a href="/" class="{% if request.resolver_match.url_name == 'index' %}on{% endif %}">Новый проект</a><a href="/history/" class="{% if request.resolver_match.url_name == 'history' %}on{% endif %}">История</a><a href="/system/" class="{% if request.resolver_match.url_name == 'system' %}on{% endif %}">Система</a></nav>
+<span class="pill">LOCAL · PRIVATE</span></div>
+{% block body %}{% endblock %}
+<footer>ClipForge Studio v5 · всё считается локально · Django, faster-whisper, FFmpeg, OpenCV</footer></main>{% block scripts %}{% endblock %}</body></html>

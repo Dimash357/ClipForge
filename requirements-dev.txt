@@ -1,0 +1,3 @@
+# Only needed to run the automated tests (provides a public-domain test face image for the scene detector)
+-r requirements.txt
+scikit-image>=0.22

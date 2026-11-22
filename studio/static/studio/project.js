@@ -1,0 +1,179 @@
+(() => {
+const PID = window.CF.pid;
+const $ = id => document.getElementById(id);
+const csrf = () => decodeURIComponent((document.cookie.split('; ').find(x => x.startsWith('csrftoken=')) || '').split('=')[1] || '');
+const post = (url, body) => fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf()}, body: JSON.stringify(body || {})});
+function h(tag, attrs, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(attrs || {})) {
+    if (k === 'class') e.className = v; else if (k === 'text') e.textContent = v;
+    else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v);
+  }
+  for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
+  return e;
+}
+const TYPES = {fullframe: 'Весь кадр', gameplay: 'Игра', game_cam: 'Игра + камера', talking: 'Автор', screen: 'Экран', smart: 'Smart', center: 'Центр'};
+const MODES = {fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay + Facecam', gameplay: 'Gameplay', center: 'Центр'};
+const STATUS = {done: 'Готово', error: 'Ошибка', cancelled: 'Остановлено', interrupted: 'Прервано', review: 'Ждёт подтверждения', processing: 'В работе', fetching: 'Загрузка', queued: 'В очереди'};
+let data = null, timer = null;
+const cards = new Map(), cand = new Map();
+
+async function poll() {
+  clearTimeout(timer);
+  try {
+    const r = await fetch(`/api/projects/${PID}/status/`); data = await r.json(); render(data);
+    timer = setTimeout(poll, data.active ? 1200 : (['processing', 'fetching', 'queued'].includes(data.status) ? 2000 : 6000));
+  } catch (e) { timer = setTimeout(poll, 4000); }
+}
+
+function render(d) {
+  const badge = $('statusbadge'); badge.textContent = STATUS[d.status] || d.status; badge.className = 'badge b-' + d.status;
+  $('message').textContent = d.message || STATUS[d.status] || d.status;
+  for (const s of d.stages) {
+    const el = document.querySelector(`.step[data-key="${s.key}"]`); if (!el) continue;
+    el.className = 'step ' + s.state;
+    const bar = el.querySelector('.bar');
+    if (s.state === 'active') {
+      const known = d.stage_progress != null; el.classList.toggle('indet', !known); bar.style.width = known ? Math.round(d.stage_progress * 100) + '%' : '';
+    } else { el.classList.remove('indet'); bar.style.width = s.state === 'done' ? '100%' : '0'; }
+  }
+  const act = d.status === 'processing' || d.status === 'fetching' || d.status === 'queued';
+  $('submsg').textContent = act && d.stage_progress != null ? `Текущий этап: ${Math.round(d.stage_progress * 100)}%` : (act ? 'Идёт этап без точного прогресса — индикатор показывает активность.' : '');
+  const err = $('error'); err.style.display = d.error ? 'block' : 'none'; err.textContent = d.error || '';
+  const actions = $('actions'); actions.replaceChildren();
+  if (act) actions.append(h('button', {class: 'danger', text: d.cancel_requested ? 'Останавливаем…' : '■ Остановить', disabled: d.cancel_requested, onclick: cancel}));
+  else {
+    if (['error', 'cancelled', 'interrupted'].includes(d.status)) actions.append(h('button', {class: 'primary', text: '↻ Продолжить (без повторной загрузки и транскрибации)', onclick: () => resume({})}));
+    if (d.status === 'done') actions.append(h('button', {text: '↻ Подобрать моменты заново', onclick: () => resume({reprocess: true, skip_review: true})}));
+    if (d.transcript_meta && d.transcript_meta.device && !act) actions.append(h('span', {class: 'hint', text: `Whisper: ${d.transcript_meta.model} · ${String(d.transcript_meta.device).toUpperCase()}`}));
+  }
+  $('progresspanel').style.display = (d.status === 'done' && !d.error && d.clips.length) ? 'none' : 'block';
+  if (d.status === 'done' && d.clips.some(c => c.status === 'error')) $('progresspanel').style.display = 'block';
+  renderReview(d); renderClips(d);
+}
+
+async function cancel() { await post(`/api/projects/${PID}/cancel/`); poll(); }
+async function resume(body) { const r = await post(`/api/projects/${PID}/resume/`, body); if (!r.ok) alert((await r.json()).error || 'Не удалось запустить'); poll(); }
+
+// ---------------------------------------------------------------- review (candidates)
+function renderReview(d) {
+  const panel = $('reviewpanel'), list = $('candidates');
+  const cs = d.clips.filter(c => c.status === 'candidate');
+  panel.style.display = d.status === 'review' && cs.length ? 'block' : 'none';
+  if (panel.style.display === 'none') { cand.clear(); list.replaceChildren(); return; }
+  for (const c of cs) { if (!cand.has(c.id)) { const el = candCard(c, d); cand.set(c.id, el); list.append(el); } }
+}
+function scoreBars(sc) {
+  if (!sc || sc.hook == null) return null;
+  const names = {hook: 'Hook', context: 'Context', engagement: 'Engagement', completeness: 'Completeness'};
+  return h('div', {class: 'row'}, Object.entries(names).map(([k, n]) => h('span', {class: 'chip', text: `${n} ${sc[k]}`})));
+}
+function candCard(c, d) {
+  const v = h('video', {controls: true, preload: 'metadata', src: `${d.source_url}#t=${c.start},${c.end}`});
+  const s = h('input', {type: 'number', step: '0.1', value: c.start.toFixed(1)}), e = h('input', {type: 'number', step: '0.1', value: c.end.toFixed(1)});
+  const chk = h('input', {type: 'checkbox', checked: true});
+  v.addEventListener('timeupdate', () => { const end = parseFloat(e.value); if (v.currentTime >= end) { v.pause(); v.currentTime = parseFloat(s.value); } });
+  const el = h('div', {class: 'clip', 'data-id': c.id}, v,
+    h('label', {class: 'check'}, chk, ` Рендерить · Score ${c.score}`),
+    h('div', {class: 'grid2'}, h('div', {}, h('label', {text: 'Начало, с'}), s, h('button', {class: 'sm', type: 'button', text: '⇤ из плеера', onclick: () => s.value = v.currentTime.toFixed(1)})),
+      h('div', {}, h('label', {text: 'Конец, с'}), e, h('button', {class: 'sm', type: 'button', text: '⇥ из плеера', onclick: () => e.value = v.currentTime.toFixed(1)}))),
+    scoreBars(c.scores), h('div', {class: 'why', text: c.reason}), h('div', {class: 'why', text: c.text}));
+  el._get = () => ({id: c.id, start: parseFloat(s.value), end: parseFloat(e.value), on: chk.checked});
+  return el;
+}
+$('rv_go').addEventListener('click', async () => {
+  const picked = [...cand.values()].map(x => x._get()).filter(x => x.on);
+  if (!picked.length) { alert('Отметьте хотя бы один фрагмент.'); return; }
+  const r = await post(`/api/projects/${PID}/render/`, {clips: picked, discard_others: true, mode: $('rv_mode').value, overrides: {subtitle_style: $('rv_style').value}});
+  if (!r.ok) alert((await r.json()).error); cand.clear(); $('candidates').replaceChildren(); poll();
+});
+
+// ---------------------------------------------------------------- results
+function timeline(c) {
+  if (!c.segments || c.segments.length < 1) return null;
+  const total = c.segments[c.segments.length - 1].end - c.segments[0].start || 1;
+  const bar = h('div', {class: 'tl'}, c.segments.map(s => h('span', {class: 't-' + s.type, style: `flex:${(s.end - s.start) / total}`,
+    title: `${TYPES[s.type] || s.type} · ${s.start.toFixed(1)}–${s.end.toFixed(1)} с` + (s.confidence != null ? ` · уверенность ${Math.round(s.confidence * 100)}%` : '') + (s.fallback ? ' · запасной вариант' : '')})));
+  const used = [...new Set(c.segments.map(s => s.type))];
+  return h('div', {}, bar, h('div', {class: 'legend'}, used.map(t => h('span', {}, h('span', {class: 't-' + t, style: 'display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:4px'}), TYPES[t] || t))));
+}
+function qualityChip(q) {
+  if (!q || q.score == null) return h('span', {class: 'chip', text: 'Проверка…'});
+  return h('span', {class: 'chip ' + (q.score >= 85 ? 'q-ok' : q.score >= 60 ? 'q-warn' : 'q-bad'), text: `Качество ${q.score}/100`});
+}
+function copyBtn(text, label) {
+  return h('button', {class: 'secondary', type: 'button', text: label || text, title: 'Копировать', onclick: async ev => { try { await navigator.clipboard.writeText(text); ev.target.dataset.o = ev.target.textContent; ev.target.textContent = '✓ Скопировано'; setTimeout(() => ev.target.textContent = ev.target.dataset.o, 1200); } catch (e) {} }});
+}
+function clipCard(c) {
+  const media = c.url ? h('video', {controls: true, preload: 'metadata', poster: c.poster || false, src: c.url}) :
+    h('div', {class: 'ph', text: c.status === 'error' ? 'Ошибка рендера' : c.status === 'rendering' ? 'Рендерится…' : c.status === 'queued' ? 'В очереди' : 'Ещё не отрендерен'});
+  const meta = c.meta || {};
+  const kids = [media,
+    h('div', {class: 'row'}, h('span', {class: 'chip', text: `${c.duration} с`}), h('span', {class: 'chip', text: MODES[c.mode] || c.mode}), c.quality ? qualityChip(c.quality) : null,
+      c.fallback_renderer ? h('span', {class: 'chip q-warn', text: 'резервный рендер v4'}) : null, h('span', {class: 'chip', text: `Score ${c.score}`})),
+    h('h3', {text: c.title})];
+  if (c.error) kids.push(h('div', {class: 'error', text: c.error}));
+  for (const n of (c.notes || [])) kids.push(h('div', {class: 'notice', text: 'ℹ ' + n}));
+  const tl = timeline(c); if (tl) kids.push(tl);
+  if (c.reason) kids.push(h('div', {class: 'why', text: c.reason}));
+  if (c.scores && c.scores.hook != null) kids.push(scoreBars(c.scores));
+  if (meta.titles && meta.titles.length) {
+    kids.push(h('details', {}, h('summary', {text: 'Названия, описание, хештеги'}),
+      h('div', {class: 'titles'}, meta.titles.map(t => copyBtn(t))),
+      meta.titles_en && meta.lang !== 'en' ? h('div', {class: 'titles', style: 'margin-top:8px'}, h('small', {text: 'English'}), meta.titles_en.map(t => copyBtn(t))) : null,
+      meta.titles_ru && meta.lang !== 'ru' ? h('div', {class: 'titles', style: 'margin-top:8px'}, h('small', {text: 'Русский'}), meta.titles_ru.map(t => copyBtn(t))) : null,
+      !meta.bilingual ? h('p', {class: 'hint', text: 'Варианты составлены из речи клипа на языке видео. Двуязычные варианты доступны при включённом USE_OLLAMA=1.'}) : null,
+      meta.description ? h('div', {class: 'titles', style: 'margin-top:8px'}, copyBtn(meta.description, '📝 ' + meta.description)) : null,
+      meta.hashtags ? h('div', {class: 'tags', text: meta.hashtags.join(' ')}) : null));
+  }
+  if (c.quality && c.quality.checks && c.quality.checks.length) {
+    kids.push(h('details', {}, h('summary', {text: 'Автопроверка качества'}),
+      h('div', {class: 'checks'}, c.quality.checks.map(k => h('div', {class: k.status, text: `${k.label}${k.detail ? ' — ' + k.detail : ''}`})))));
+  }
+  const row = h('div', {class: 'row'});
+  if (c.url) row.append(h('a', {class: 'btn', href: c.download, download: '', text: '↓ Скачать MP4'}));
+  row.append(h('button', {type: 'button', text: '✎ Перемонтировать', onclick: () => openDialog(c)}), h('button', {type: 'button', text: 'Aa Субтитры', onclick: () => openDialog(c, true)}));
+  kids.push(row);
+  if (c.encoder) kids.push(h('div', {class: 'hint', text: `Кодирование: ${c.encoder}`}));
+  return h('div', {class: 'clip'}, kids);
+}
+function renderClips(d) {
+  const wrap = $('clips'); const list = d.clips.filter(c => c.status !== 'candidate');
+  if (!list.length) return;
+  if (wrap.querySelector('p.muted')) wrap.replaceChildren();
+  const ids = new Set(list.map(c => c.id));
+  for (const [id, v] of cards) if (!ids.has(id)) { v.el.remove(); cards.delete(id); }
+  for (const c of list) {
+    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles]);
+    const cur = cards.get(c.id);
+    if (cur && cur.sig === sig) continue;
+    const el = clipCard(c);
+    if (cur) cur.el.replaceWith(el); else wrap.append(el);
+    cards.set(c.id, {sig, el});
+  }
+}
+
+// ---------------------------------------------------------------- re-render dialog
+const dlg = $('dlg'); let dlgClip = null;
+function openDialog(c, focusStyle) {
+  dlgClip = c; const o = c.opts || {};
+  $('dlgtitle').textContent = `Перемонтировать: ${c.title}`;
+  const v = $('dlgvideo'); v.src = `${data.source_url}#t=${c.start},${c.end}`;
+  $('d_start').value = c.start.toFixed(1); $('d_end').value = c.end.toFixed(1); $('d_mode').value = c.mode;
+  $('d_corner').value = 'auto'; $('d_style').value = o.subtitle_style; $('d_words').value = o.caption_words || 0;
+  $('d_hl').value = o.caption_highlight == null ? 'auto' : (o.caption_highlight ? '1' : '0'); $('d_caps').value = o.captions ? '1' : '0';
+  $('d_preset').value = o.preset; $('d_quality').value = o.quality; $('d_bg').value = o.bg_fill; $('d_trans').value = o.transition;
+  $('dlgerr').style.display = 'none'; dlg.showModal(); if (focusStyle) $('d_style').focus();
+}
+$('d_setstart').onclick = () => $('d_start').value = $('dlgvideo').currentTime.toFixed(1);
+$('d_setend').onclick = () => $('d_end').value = $('dlgvideo').currentTime.toFixed(1);
+$('d_go').onclick = async () => {
+  const body = {start: parseFloat($('d_start').value), end: parseFloat($('d_end').value), mode: $('d_mode').value, corner: $('d_corner').value,
+    overrides: {subtitle_style: $('d_style').value, caption_words: parseInt($('d_words').value || '0', 10), caption_highlight: $('d_hl').value === 'auto' ? null : $('d_hl').value === '1',
+      captions: $('d_caps').value === '1', preset: $('d_preset').value, quality: $('d_quality').value, bg_fill: $('d_bg').value, transition: $('d_trans').value}};
+  const r = await post(`/api/clips/${dlgClip.id}/rerender/`, body);
+  if (!r.ok) { const e = $('dlgerr'); e.textContent = (await r.json()).error || 'Ошибка'; e.style.display = 'block'; return; }
+  dlg.close(); $('progresspanel').style.display = 'block'; poll();
+};
+poll();
+})();

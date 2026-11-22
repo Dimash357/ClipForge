@@ -1,0 +1,23 @@
+{% extends "studio/base.html" %}
+{% block title %}Система — ClipForge{% endblock %}
+{% block body %}
+<h1 style="font-size:28px">Диагностика системы</h1>
+<p class="hint">Ускорение (CUDA / NVENC) включается только после реальной проверки. Если проверка не прошла, ClipForge работает на CPU.</p>
+<div class="panel"><table class="kv">
+<tr><td>Python / ОС</td><td>{{ report.python }} · {{ report.platform }}</td></tr>
+<tr><td>FFmpeg</td><td>{% if report.ffmpeg.ffmpeg %}<span class="ok">✓</span> {{ report.ffmpeg.version }}{% else %}<span class="bad">✕ не найден</span> — установите FFmpeg и добавьте в PATH{% endif %}</td></tr>
+<tr><td>ffprobe</td><td>{% if report.ffmpeg.ffprobe %}<span class="ok">✓</span>{% else %}<span class="bad">✕ не найден</span>{% endif %}</td></tr>
+<tr><td>Фильтр субтитров (libass)</td><td>{% if report.ffmpeg.libass %}<span class="ok">✓</span>{% else %}<span class="bad">✕ нет — субтитры не будут вшиваться</span>{% endif %}</td></tr>
+<tr><td>Видеокарта</td><td>{% if report.gpu.name %}{{ report.gpu.name }} · {{ report.gpu.vram_mb }} МБ · драйвер {{ report.gpu.driver }}{% else %}<span class="muted">nvidia-smi не найден</span>{% endif %}</td></tr>
+<tr><td>NVENC (кодирование)</td><td>{% if report.nvenc.ok %}<span class="ok">✓ работает</span>{% else %}<span class="warnc">недоступен</span> <small>{{ report.nvenc.detail|truncatechars:160 }}</small>{% endif %}</td></tr>
+<tr><td>CUDA для Whisper</td><td>{% if report.cuda.count %}<span class="ok">✓</span> устройств: {{ report.cuda.count }}{% else %}<span class="warnc">нет</span> {{ report.cuda.error }}{% endif %}</td></tr>
+<tr><td>Whisper будет использовать</td><td><b>{{ report.whisper.device|upper }}</b> · {{ report.whisper.compute }} · модель {{ report.whisper.model }}<br><small>{{ report.whisper.note }}</small></td></tr>
+<tr><td>Видео будет кодироваться</td><td><b>{{ report.encoder.name }}</b> <small>{{ report.encoder.note }}</small></td></tr>
+<tr><td>Библиотеки</td><td>{% for k, v in report.libs.items %}{{ k }}: {% if v %}<span class="ok">{{ v }}</span>{% else %}<span class="bad">нет</span>{% endif %} · {% endfor %}</td></tr>
+<tr><td>Свободно на диске</td><td>{{ report.disk_free_gb }} ГБ</td></tr>
+<tr><td>Параллельных задач</td><td>{{ report.max_jobs }} <small>(CLIPFORGE_MAX_JOBS)</small></td></tr>
+<tr><td>Ollama (необязательно)</td><td>{% if report.ollama %}включён{% else %}выключен{% endif %}</td></tr></table>
+<div class="actions"><button class="secondary" id="recheck">↻ Проверить заново</button></div></div>
+<div class="notice"><b>Как включить GPU для Whisper (если CUDA «нет»):</b> установите свежий драйвер NVIDIA и CUDA-библиотеки (cuBLAS 12 + cuDNN 9) — подробности в README, раздел «GPU». Принудительно выбрать устройство: <code>WHISPER_DEVICE=cpu</code> или <code>cuda</code>.</div>
+{% endblock %}
+{% block scripts %}<script>document.getElementById('recheck').onclick=async()=>{const b=document.getElementById('recheck');b.disabled=true;b.textContent='Проверяем…';await fetch('/api/system/recheck/',{method:'POST',headers:{'X-CSRFToken':decodeURIComponent((document.cookie.split('; ').find(x=>x.startsWith('csrftoken='))||'').split('=')[1]||'')}});location.reload()}</script>{% endblock %}
