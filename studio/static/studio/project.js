@@ -12,8 +12,8 @@ function h(tag, attrs, ...kids) {
   for (const c of kids.flat()) if (c != null) e.append(c.nodeType ? c : document.createTextNode(c));
   return e;
 }
-const TYPES = {fullframe: 'Весь кадр', gameplay: 'Игра', game_cam: 'Игра + камера', talking: 'Автор', screen: 'Экран', smart: 'Smart', center: 'Центр'};
-const MODES = {fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay + Facecam', gameplay: 'Gameplay', center: 'Центр'};
+const TYPES = {reaction_cam: 'Вебка + игра', action: 'Игра (за действием)', fullframe: 'Весь кадр', gameplay: 'Игра', game_cam: 'Игра + камера', talking: 'Автор', screen: 'Экран', smart: 'Smart', center: 'Центр'};
+const MODES = {reaction: 'Reaction Priority', fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay Priority', gameplay: 'Gameplay', center: 'Центр'};
 const STATUS = {done: 'Готово', error: 'Ошибка', cancelled: 'Остановлено', interrupted: 'Прервано', review: 'Ждёт подтверждения', processing: 'В работе', fetching: 'Загрузка', queued: 'В очереди'};
 let data = null, timer = null;
 const cards = new Map(), cand = new Map();
@@ -46,6 +46,8 @@ function render(d) {
     if (['error', 'cancelled', 'interrupted'].includes(d.status)) actions.append(h('button', {class: 'primary', text: '↻ Продолжить (без повторной загрузки и транскрибации)', onclick: () => resume({})}));
     if (d.status === 'done') actions.append(h('button', {text: '↻ Подобрать моменты заново', onclick: () => resume({reprocess: true, skip_review: true})}));
     if (d.transcript_meta && d.transcript_meta.device && !act) actions.append(h('span', {class: 'hint', text: `Whisper: ${d.transcript_meta.model} · ${String(d.transcript_meta.device).toUpperCase()}`}));
+    const a = d.analysis;
+    if (a && a.probe && !act) actions.append(h('span', {class: 'hint', text: `Видео: ${a.probe.width}×${a.probe.height}, ${Math.round(a.probe.fps)} FPS, ${Math.round(a.probe.duration)} с · язык: ${a.language || 'авто'} · вебка: ${a.cam ? a.cam.replace('_', ' ') : (a.cam_checked ? 'не найдена' : 'не проверялась')}`}));
   }
   $('progresspanel').style.display = (d.status === 'done' && !d.error && d.clips.length) ? 'none' : 'block';
   if (d.status === 'done' && d.clips.some(c => c.status === 'error')) $('progresspanel').style.display = 'block';
@@ -65,26 +67,50 @@ function renderReview(d) {
 }
 function scoreBars(sc) {
   if (!sc || sc.hook == null) return null;
-  const names = {hook: 'Hook', context: 'Context', engagement: 'Engagement', completeness: 'Completeness', audio: 'Звук/эмоции', action: 'Динамика'};
-  return h('div', {class: 'row'}, Object.entries(names).filter(([k]) => sc[k] != null).map(([k, n]) => h('span', {class: 'chip', text: `${n} ${sc[k]}`})));
+  const names = {hook: 'Hook', context: 'Context', engagement: 'Engagement', completeness: 'Completeness', reaction: 'Реакция', audio: 'Звук/эмоции', action: 'Динамика'};
+  const chips = Object.entries(names).filter(([k]) => sc[k] != null).map(([k, n]) => h('span', {class: 'chip', text: `${n} ${sc[k]}`}));
+  if (sc.interest != null) chips.unshift(h('span', {class: 'chip ' + (sc.interest >= 70 ? 'q-ok' : sc.interest >= 50 ? 'q-warn' : ''), text: `Интересность ${sc.interest}/100`}));
+  return h('div', {class: 'row'}, chips);
+}
+// bounds editor: number inputs, +/- nudges, "from player", restore the detected bounds
+function boundsEditor(c, player) {
+  const s = h('input', {type: 'number', step: '0.1', min: '0', value: c.start.toFixed(1)}), e = h('input', {type: 'number', step: '0.1', min: '0', value: c.end.toFixed(1)});
+  const nudge = (inp, d) => { inp.value = Math.max(0, parseFloat(inp.value || '0') + d).toFixed(1); upd(); };
+  const len = h('span', {class: 'hint'});
+  const upd = () => { len.textContent = `Длина: ${(parseFloat(e.value) - parseFloat(s.value)).toFixed(1)} с`; };
+  s.addEventListener('input', upd); e.addEventListener('input', upd); upd();
+  const auto = (c.scores && c.scores.auto_bounds) || null;
+  const snap = h('input', {type: 'checkbox', checked: true});
+  const box = h('div', {},
+    h('div', {class: 'grid2'},
+      h('div', {}, h('label', {text: 'Начало, с'}), s, h('div', {class: 'row'},
+        h('button', {class: 'sm', type: 'button', text: '−1', onclick: () => nudge(s, -1)}), h('button', {class: 'sm', type: 'button', text: '+1', onclick: () => nudge(s, 1)}),
+        h('button', {class: 'sm', type: 'button', text: '⇤ из плеера', onclick: () => { s.value = player().currentTime.toFixed(1); upd(); }}))),
+      h('div', {}, h('label', {text: 'Конец, с'}), e, h('div', {class: 'row'},
+        h('button', {class: 'sm', type: 'button', text: '−1', onclick: () => nudge(e, -1)}), h('button', {class: 'sm', type: 'button', text: '+1', onclick: () => nudge(e, 1)}),
+        h('button', {class: 'sm', type: 'button', text: '⇥ из плеера', onclick: () => { e.value = player().currentTime.toFixed(1); upd(); }})))),
+    h('div', {class: 'row'}, len,
+      auto ? h('button', {class: 'sm', type: 'button', text: `↺ Найденные границы (${auto[0].toFixed(1)}–${auto[1].toFixed(1)})`, onclick: () => { s.value = auto[0].toFixed(1); e.value = auto[1].toFixed(1); upd(); }}) : null,
+      h('label', {class: 'check'}, snap, ' не резать слова')));
+  box._get = () => ({start: parseFloat(s.value), end: parseFloat(e.value), snap: snap.checked});
+  box._s = s; box._e = e;
+  return box;
 }
 function candCard(c, d) {
   const v = h('video', {controls: true, preload: 'metadata', src: `${d.source_url}#t=${c.start},${c.end}`});
-  const s = h('input', {type: 'number', step: '0.1', value: c.start.toFixed(1)}), e = h('input', {type: 'number', step: '0.1', value: c.end.toFixed(1)});
+  const be = boundsEditor(c, () => v);
   const chk = h('input', {type: 'checkbox', checked: true});
-  v.addEventListener('timeupdate', () => { const end = parseFloat(e.value); if (v.currentTime >= end) { v.pause(); v.currentTime = parseFloat(s.value); } });
+  v.addEventListener('timeupdate', () => { const end = parseFloat(be._e.value); if (v.currentTime >= end) { v.pause(); v.currentTime = parseFloat(be._s.value); } });
   const el = h('div', {class: 'clip', 'data-id': c.id}, v,
-    h('label', {class: 'check'}, chk, ` Рендерить · Score ${c.score}`),
-    h('div', {class: 'grid2'}, h('div', {}, h('label', {text: 'Начало, с'}), s, h('button', {class: 'sm', type: 'button', text: '⇤ из плеера', onclick: () => s.value = v.currentTime.toFixed(1)})),
-      h('div', {}, h('label', {text: 'Конец, с'}), e, h('button', {class: 'sm', type: 'button', text: '⇥ из плеера', onclick: () => e.value = v.currentTime.toFixed(1)}))),
+    h('label', {class: 'check'}, chk, ` Рендерить · Score ${c.score}`), be,
     scoreBars(c.scores), h('div', {class: 'why', text: c.reason}), h('div', {class: 'why', text: c.text}));
-  el._get = () => ({id: c.id, start: parseFloat(s.value), end: parseFloat(e.value), on: chk.checked});
+  el._get = () => ({id: c.id, ...be._get(), on: chk.checked});
   return el;
 }
 $('rv_go').addEventListener('click', async () => {
   const picked = [...cand.values()].map(x => x._get()).filter(x => x.on);
   if (!picked.length) { alert('Отметьте хотя бы один фрагмент.'); return; }
-  const r = await post(`/api/projects/${PID}/render/`, {clips: picked, discard_others: true, mode: $('rv_mode').value, overrides: {subtitle_style: $('rv_style').value}});
+  const r = await post(`/api/projects/${PID}/render/`, {clips: picked, discard_others: true, snap: picked.some(x => x.snap), mode: $('rv_mode').value, overrides: {subtitle_style: $('rv_style').value}});
   if (!r.ok) alert((await r.json()).error); cand.clear(); $('candidates').replaceChildren(); poll();
 });
 
@@ -160,15 +186,20 @@ function openDialog(c, focusStyle) {
   $('dlgtitle').textContent = `Перемонтировать: ${c.title}`;
   const v = $('dlgvideo'); v.src = `${data.source_url}#t=${c.start},${c.end}`;
   $('d_start').value = c.start.toFixed(1); $('d_end').value = c.end.toFixed(1); $('d_mode').value = c.mode;
+  const auto = (c.scores && c.scores.auto_bounds) || null; const rb = $('d_restore');
+  rb.style.display = auto ? '' : 'none'; if (auto) rb.textContent = `↺ Найденные границы (${auto[0].toFixed(1)}–${auto[1].toFixed(1)})`;
   $('d_corner').value = 'auto'; $('d_style').value = o.subtitle_style; $('d_words').value = o.caption_words || 0;
   $('d_hl').value = o.caption_highlight == null ? 'auto' : (o.caption_highlight ? '1' : '0'); $('d_caps').value = o.captions ? '1' : '0';
   $('d_preset').value = o.preset; $('d_quality').value = o.quality; $('d_bg').value = o.bg_fill; $('d_trans').value = o.transition;
   $('dlgerr').style.display = 'none'; dlg.showModal(); if (focusStyle) $('d_style').focus();
 }
+for (const [id, inp, d] of [['d_s_m', 'd_start', -1], ['d_s_p', 'd_start', 1], ['d_e_m', 'd_end', -1], ['d_e_p', 'd_end', 1]])
+  $(id).onclick = () => { $(inp).value = Math.max(0, parseFloat($(inp).value || '0') + d).toFixed(1); };
+$('d_restore').onclick = () => { const a = dlgClip && dlgClip.scores && dlgClip.scores.auto_bounds; if (a) { $('d_start').value = a[0].toFixed(1); $('d_end').value = a[1].toFixed(1); } };
 $('d_setstart').onclick = () => $('d_start').value = $('dlgvideo').currentTime.toFixed(1);
 $('d_setend').onclick = () => $('d_end').value = $('dlgvideo').currentTime.toFixed(1);
 $('d_go').onclick = async () => {
-  const body = {start: parseFloat($('d_start').value), end: parseFloat($('d_end').value), mode: $('d_mode').value, corner: $('d_corner').value,
+  const body = {start: parseFloat($('d_start').value), end: parseFloat($('d_end').value), snap: $('d_snap').checked, mode: $('d_mode').value, corner: $('d_corner').value,
     overrides: {subtitle_style: $('d_style').value, caption_words: parseInt($('d_words').value || '0', 10), caption_highlight: $('d_hl').value === 'auto' ? null : $('d_hl').value === '1',
       captions: $('d_caps').value === '1', preset: $('d_preset').value, quality: $('d_quality').value, bg_fill: $('d_bg').value, transition: $('d_trans').value}};
   const r = await post(`/api/clips/${dlgClip.id}/rerender/`, body);

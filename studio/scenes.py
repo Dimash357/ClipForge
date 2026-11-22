@@ -127,7 +127,12 @@ def frame_features(bgr, prev_small=None, detect=True, last_faces=None):
     else:
         faces = [dict(f) for f in (last_faces or [])]
     small = cv2.resize(gray, (160, max(2, int(160 * H / W))), interpolation=cv2.INTER_AREA)
-    motion = float(np.abs(small.astype(np.int16) - prev_small.astype(np.int16)).mean()) if prev_small is not None else None
+    motion = None
+    act = None
+    if prev_small is not None:
+        diff = np.abs(small.astype(np.int16) - prev_small.astype(np.int16))
+        motion = float(diff.mean())
+        act = motion_centroid(diff)
     g320 = cv2.resize(gray, (320, max(2, int(320 * H / W))), interpolation=cv2.INTER_AREA)
     bh, bw = g320.shape[0] // 16, g320.shape[1] // 16
     blocks = g320[:bh * 16, :bw * 16].reshape(bh, 16, bw, 16).swapaxes(1, 2).reshape(bh, bw, 256)
@@ -136,7 +141,23 @@ def frame_features(bgr, prev_small=None, detect=True, last_faces=None):
     edge_density = float((edges > 0).mean())
     sob = np.abs(cv2.Sobel(gray, cv2.CV_32F, 1, 0, ksize=3)) + np.abs(cv2.Sobel(gray, cv2.CV_32F, 0, 1, ksize=3))
     return {'faces': faces, 'text': find_text_boxes(bgr), 'motion': motion, 'uniform': uniform, 'edge': edge_density, 'luma': float(gray.mean()),
-            'dark': float((gray < 20).mean())}, small, sob
+            'dark': float((gray < 20).mean()), 'act': act}, small, sob
+
+
+def motion_centroid(diff, thr=18):
+    """Where is the action? Centre of the strongly changing pixels (static HUD never changes, so it is ignored).
+    -> {'cx', 'cy', 'share'} normalized, or None when (almost) nothing moves."""
+    m = diff >= thr
+    share = float(m.mean())
+    if share < 0.004:
+        return None
+    h, w = diff.shape
+    ys, xs = np.nonzero(m)
+    wts = diff[ys, xs].astype(np.float32)
+    cx = float((xs * wts).sum() / wts.sum()) / w
+    cy = float((ys * wts).sum() / wts.sum()) / h
+    # whole-screen change (camera pan, scene cut) has no single centre -> weak target
+    return {'cx': round(cx, 3), 'cy': round(cy, 3), 'share': round(share, 3)}
 
 
 def analyze(source, start, end, src_w, src_h, corner_hint='auto', cancel=None, progress=None, detect_faces=True):
@@ -284,7 +305,8 @@ def _make_cam_rect(cx, cy, fw, fh, corner, edge_mean, frac, aspect=1.3):
     conf = min(1.0, 0.4 + 0.8 * frac + (0.1 if snapped else 0.0))
     face_rel = (round(max(0.0, min(1.0, (cx - x) / cw)), 3), round(max(0.0, min(1.0, (cy - y) / ch)), 3))
     return {'x': x, 'y': y, 'w': cw, 'h': ch, 'corner': corner, 'confidence': round(conf, 2), 'frac': round(frac, 2),
-            'snapped': snapped, 'source': 'detected', 'face_rel': face_rel}
+            'snapped': snapped, 'source': 'detected', 'face_rel': face_rel,
+            'face_h': round(max(0.05, min(1.0, fh / ch)), 3)}
 
 
 def _snap_to_edges(edge_mean, x, y, w, h, corner):
@@ -336,7 +358,7 @@ def manual_cam(corner):
     w, h = .30, .42
     return {'x': max(0, min(1 - w, cx - w / 2)), 'y': max(0, min(1 - h, cy - h / 2)), 'w': w, 'h': h,
             'corner': corner, 'confidence': 0.6, 'frac': 0.0, 'snapped': False, 'source': 'manual',
-            'face_rel': (0.5, 0.5)}
+            'face_rel': (0.5, 0.5), 'face_h': 0.45}
 
 
 # ------------------------------------------------------------------ classification
@@ -530,21 +552,52 @@ def _choose_targets(samples, t_lo, t_hi, crop_w_frac, avoid_cam=None):
     return targets
 
 
-def track_path(samples, t_lo, t_hi, src_w, src_h, crop_w, crop_h, avoid_cam=None, vmax_frac=0.35):
+def action_targets(samples, t_lo, t_hi, avoid_cam=None, smooth=5):
+    """Per-sample 'main action' position: motion centroid, median-smoothed; None where nothing moves."""
+    raw = []
+    for s in samples:
+        if not (t_lo - 1e-6 <= s['t'] < t_hi):
+            continue
+        a = s.get('act')
+        if a and a['share'] < 0.6 and not (avoid_cam and _face_in_cam({'cx': a['cx'], 'cy': a['cy']}, avoid_cam, 0.0)):
+            raw.append((s['t'], (a['cx'], a['cy'])))
+        else:
+            raw.append((s['t'], None))
+    out = []
+    half = smooth // 2
+    for k, (t, tgt) in enumerate(raw):
+        near = [p for _, p in raw[max(0, k - half):k + half + 1] if p]
+        if tgt is None or len(near) < 2:
+            out.append((t, tgt if near else None))
+            continue
+        out.append((t, (float(np.median([p[0] for p in near])), float(np.median([p[1] for p in near])))))
+    return out
+
+
+def track_action(samples, t_lo, t_hi, src_w, src_h, crop_w, crop_h, avoid_cam=None):
+    """Virtual camera that follows the main on-screen action (no webcam / no face). Slower than face tracking."""
+    tg = action_targets(samples, t_lo, t_hi, avoid_cam)
+    return track_path(samples, t_lo, t_hi, src_w, src_h, crop_w, crop_h, targets=tg, vmax_frac=0.25, dead_zone=0.15)
+
+
+def track_path(samples, t_lo, t_hi, src_w, src_h, crop_w, crop_h, avoid_cam=None, vmax_frac=0.35, targets=None,
+               dead_zone=0.08):
     """Smooth virtual-camera path for a crop window. Returns [(t_rel, x_px, y_px)] relative to t_lo.
 
     Dead-zone + eased follow + speed limit => no jitter, no sudden jumps.
+    targets: precomputed [(t, (cx, cy) | None)] (e.g. action_targets); default = faces.
     """
     fps = SAMPLE_FPS
     dt = 1.0 / fps
     cw_frac = crop_w / src_w
-    targets = _choose_targets(samples, t_lo, t_hi, cw_frac, avoid_cam)
+    if targets is None:
+        targets = _choose_targets(samples, t_lo, t_hi, cw_frac, avoid_cam)
     cx0, cy0 = 0.5, 0.5
     first = next((tg for _, tg in targets if tg), None)
     cam_x, cam_y = ((first[0], first[1]) if first else (cx0, cy0))
     cam_x_px = cam_x * src_w - crop_w / 2
     cam_y_px = cam_y * src_h - crop_h / 2
-    dz = 0.08 * crop_w
+    dz = dead_zone * crop_w
     vmax = vmax_frac * crop_w
     path = []
     last_tgt = (cam_x, cam_y)
@@ -598,3 +651,31 @@ def simplify_path(path, tol=3.0):
 
     rec(0, len(path) - 1)
     return [path[i] for i in sorted(set(keep))]
+
+
+# ------------------------------------------------------------------ whole-source webcam detection
+def detect_source_cam(source, duration, src_w, src_h, corner_hint='auto', windows=12, win_len=1.5, cancel=None):
+    """Step 1 of the pipeline: is there a webcam overlay in this stream and where?
+
+    Samples `windows` short spans spread over the whole video (faces + time-averaged edges) and runs the same
+    stationary-corner-face estimator as the per-clip analysis. Returns the cam dict or None."""
+    if duration <= 0:
+        return None
+    samples, edge_acc, n = [], None, 0
+    step = duration / (windows + 1)
+    for k in range(windows):
+        a = max(0.0, step * (k + 1) - win_len / 2)
+        b = min(duration, a + win_len)
+        prev = None
+        for t, bgr in sample_frames(source, a, b, src_w, src_h, fps=2.0, cancel=cancel):
+            feat, prev, sob = frame_features(bgr, prev, detect=True)
+            samples.append(feat)
+            edge_acc = sob if edge_acc is None else edge_acc + sob
+            n += 1
+    if not samples:
+        return None
+    cam = estimate_cam(samples, edge_acc / n, corner_hint)
+    if cam:
+        cam['source'] = 'detected_source'
+        cam['face_rel'] = list(cam['face_rel'])
+    return cam

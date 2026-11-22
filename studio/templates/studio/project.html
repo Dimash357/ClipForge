@@ -15,8 +15,9 @@
 <section><h2>Результаты</h2><div class="clips" id="clips"><p class="muted">Клипы появятся после обработки.</p></div></section>
 <dialog id="dlg"><form method="dialog" id="dlgform"><h2 id="dlgtitle">Перемонтировать клип</h2>
 <video id="dlgvideo" controls preload="metadata"></video>
-<div class="grid2"><div><label>Начало, с</label><input type="number" step="0.1" min="0" id="d_start"><button type="button" class="sm" id="d_setstart" style="margin-top:6px">⇤ Взять из плеера</button></div>
-<div><label>Конец, с</label><input type="number" step="0.1" min="0" id="d_end"><button type="button" class="sm" id="d_setend" style="margin-top:6px">⇥ Взять из плеера</button></div></div>
+<div class="grid2"><div><label>Начало, с</label><input type="number" step="0.1" min="0" id="d_start"><div class="row" style="margin-top:6px"><button type="button" class="sm" id="d_s_m">−1</button><button type="button" class="sm" id="d_s_p">+1</button><button type="button" class="sm" id="d_setstart">⇤ Взять из плеера</button></div></div>
+<div><label>Конец, с</label><input type="number" step="0.1" min="0" id="d_end"><div class="row" style="margin-top:6px"><button type="button" class="sm" id="d_e_m">−1</button><button type="button" class="sm" id="d_e_p">+1</button><button type="button" class="sm" id="d_setend">⇥ Взять из плеера</button></div></div></div>
+<div class="row"><button type="button" class="sm" id="d_restore" style="display:none">↺ Найденные границы</button><label class="check"><input type="checkbox" id="d_snap" checked> не резать слова (сдвинуть границу к ближайшему слову)</label></div>
 <div class="grid2"><div><label>Режим монтажа</label><select id="d_mode">{% for k, label in edit_modes %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></div>
 <div><label>Facecam в исходнике</label><select id="d_corner"><option value="auto">Авто</option><option value="top_left">Сверху слева</option><option value="top_right">Сверху справа</option><option value="bottom_left">Снизу слева</option><option value="bottom_right">Снизу справа</option></select></div>
 <div><label>Стиль субтитров</label><select id="d_style">{% for k, label in styles %}<option value="{{ k }}">{{ label }}</option>{% endfor %}</select></div>

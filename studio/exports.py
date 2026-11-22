@@ -1,5 +1,7 @@
 """Export presets and validated per-project options (every value is whitelisted)."""
-from .captions import STYLES, DEFAULT_STYLE
+from .captions import STYLES
+
+STREAM_STYLE = 'stream'
 
 PRESETS = {
     '1080p': {'label': '1080×1920 (Full HD)', 'W': 1080, 'H': 1920},
@@ -13,8 +15,9 @@ QUALITY = {
 }
 EDIT_MODES = [
     ('director', 'Auto Scene Director (сам выбирает по сценам)'),
+    ('reaction', 'Reaction Priority (стримы: вебка сверху 40%, игра снизу 60%)'),
     ('smart', 'Smart Reframe (лицо / центр)'),
-    ('gameplay_facecam', 'Gameplay + Facecam (разделённый экран)'),
+    ('gameplay_facecam', 'Gameplay Priority (Gameplay + Facecam: игра сверху, вебка снизу)'),
     ('fullframe', 'Без обрезки (весь кадр на размытом фоне: кино, интервью, вшитые титры)'),
     ('gameplay', 'Gameplay (сохранять обзор игры)'),
     ('center', 'Обычный центральный кроп'),
@@ -22,24 +25,27 @@ EDIT_MODES = [
 MODE_KEYS = [m for m, _ in EDIT_MODES]
 
 DEFAULTS = {
-    'preset': '1080p', 'quality': 'balanced', 'fps': 'source', 'encoder': 'auto',
-    'captions': True, 'subtitle_style': DEFAULT_STYLE, 'caption_words': 0, 'caption_animate': True,
+    'preset': '1080p', 'quality': 'balanced', 'fps': '30', 'encoder': 'auto',
+    'captions': True, 'subtitle_style': STREAM_STYLE, 'caption_words': 0, 'caption_animate': True,
     'caption_highlight': None,
     'bg_fill': 'blur', 'director_fallback': 'gameplay', 'transition': 'none', 'smart_tracking': True,
     'hide_cam': True, 'cam_position': 'bottom', 'highlight_engine': 'smart', 'review_first': False,
     'gameplay_zoom': 1.0, 'text_guard': True,
     # v5.1: Gameplay + Facecam geometry / duplicate-webcam removal, multimodal highlight scoring
     'cam_fit': 'balanced', 'cam_fill': 'mirror', 'highlight_audio': True, 'highlight_motion': True,
+    # v5.2: stream editor
+    'loudness': 'stream', 'auto_length': False,
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
     'encoder': {'auto', 'cpu'}, 'subtitle_style': set(STYLES) | {'classic'},
     'bg_fill': {'blur', 'solid', 'focus'}, 'director_fallback': {'gameplay', 'smart'},
     'transition': {'none', 'fade'}, 'cam_position': {'bottom', 'top'}, 'highlight_engine': {'smart', 'classic'},
-    'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'},
+    'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'}, 'loudness': {'stream', 'off'},
 }
+LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
-         'highlight_motion')
+         'highlight_motion', 'auto_length')
 
 
 def _b(v):

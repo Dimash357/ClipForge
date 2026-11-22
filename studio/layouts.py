@@ -103,7 +103,7 @@ def cam_rect_px(cam, src_w, src_h):
     return cx, cy, cw, ch
 
 
-def cam_geometry(W, H, src_w, src_h, cam, fit='balanced'):
+def cam_geometry(W, H, src_w, src_h, cam, fit='balanced', panel_h=None, game_anchor=0.3):
     """Pure geometry of the Gameplay + Facecam layout (no ffmpeg strings) -> dict.
 
     * webcam panel: W x Hc, height follows the overlay's own aspect (clamped) -> least upscaling, sharp image;
@@ -114,7 +114,7 @@ def cam_geometry(W, H, src_w, src_h, cam, fit='balanced'):
     """
     cx, cy, cw, ch = cam_rect_px(cam, src_w, src_h)
     nat_h = W * ch / cw
-    Hc = ev(max(CAM_PANEL_MIN * H, min(CAM_PANEL_MAX * H, nat_h)))
+    Hc = ev(panel_h) if panel_h else ev(max(CAM_PANEL_MIN * H, min(CAM_PANEL_MAX * H, nat_h)))
     Hg = H - Hc
     budget = CAM_GAME_FIT.get(fit, CAM_GAME_FIT['balanced'])
     # margin around the overlay (its border/shadow must not survive)
@@ -150,7 +150,7 @@ def cam_geometry(W, H, src_w, src_h, cam, fit='balanced'):
         hide = (mx0, my0, (mx1 - mx0) // 2 * 2, (my1 - my0) // 2 * 2)
     free = Hg - out_h
     return {'Hc': Hc, 'Hg': Hg, 'cam': (cx, cy, cw, ch), 'crop': (x0, 0, vis_w, vis_h), 'game': (out_w, out_h),
-            'game_y': int(free * 0.3) // 2 * 2, 'hide': hide, 'cam_right': cam_right, 'cam_top': (cy + ch / 2) < src_h / 2,
+            'game_y': int(free * game_anchor) // 2 * 2, 'hide': hide, 'cam_right': cam_right, 'cam_top': (cy + ch / 2) < src_h / 2,
             'crop_frac': round(cut / src_w, 3)}
 
 
@@ -208,6 +208,21 @@ def cam_layout(W, H, src_w, src_h, inp, out, cam, bg='blur', cam_position='botto
                  f"crop={W}:{Hc}:x='min(max(0\\,{_f(face_rel[0])}*iw-ow/2)\\,iw-ow)':"
                  f"y='min(max(0\\,{_f(face_rel[1])}*ih-oh/2)\\,ih-oh)',unsharp=5:5:0.6:5:5:0.0,setsar=1[campanel]")
     parts = [f'[{inp}]split=2[gsrc0][cam]']
+    parts += _game_panel(W, src_w, src_h, g, bg, hide_cam, fill)
+    parts.append(cam_chain)
+    stack = '[gpanel][campanel]vstack=inputs=2' if cam_position == 'bottom' else '[campanel][gpanel]vstack=inputs=2'
+    parts.append(f'{stack},setsar=1[{out}]')
+    if cam_position == 'bottom':
+        margin = Hc + 0.012 * H                      # text sits just above the camera panel, over the background band
+    else:
+        margin = H - (Hc + 0.012 * H + 0.07 * H)     # just below the camera panel
+    return ';'.join(parts), int(max(0.20 * H, min(0.45 * H, margin)))
+
+
+def _game_panel(W, src_w, src_h, g, bg, hide_cam, fill):
+    """[gsrc0] -> [gpanel]: duplicate webcam removed, game scaled/cropped per geometry `g`, background fill."""
+    Hg = g['Hg']
+    parts = []
     game_src = 'gsrc'
     if hide_cam and g['hide']:
         frag = None
@@ -230,14 +245,50 @@ def cam_layout(W, H, src_w, src_h, inp, out, cam, bg='blur', cam_position='botto
         parts.append(_blur_bg(W, Hg, 'gbg', 'gb'))
         parts.append(f'[gfg]{fg}[gf]')
         parts.append(f'[gb][gf]overlay={gx}:{gy},setsar=1[gpanel]')
-    parts.append(cam_chain)
-    stack = '[gpanel][campanel]vstack=inputs=2' if cam_position == 'bottom' else '[campanel][gpanel]vstack=inputs=2'
-    parts.append(f'{stack},setsar=1[{out}]')
-    if cam_position == 'bottom':
-        margin = Hc + 0.012 * H                      # text sits just above the camera panel, over the background band
-    else:
-        margin = H - (Hc + 0.012 * H + 0.07 * H)     # just below the camera panel
-    return ';'.join(parts), int(max(0.20 * H, min(0.45 * H, margin)))
+    return parts
+
+
+REACTION_CAM_SHARE = 0.40       # webcam panel height in Reaction Priority
+REACTION_ZOOM = 1.12            # small extra zoom so the face can be centred / eyes placed on the upper third
+
+
+def reaction_cam_crop(W, Hc, cw, ch, face_x, face_y, face_h, zoom=REACTION_ZOOM):
+    """Scale + crop of the webcam (cw x ch px) into W x Hc: face centred horizontally, eyes on the upper third.
+    face_x/face_y: face centre relative to the crop, face_h: face height relative to the crop height."""
+    s = max(W / cw, Hc / ch) * zoom
+    sw, sh = ev(cw * s), ev(ch * s)
+    eye_y = max(0.0, face_y - 0.12 * face_h)           # eyes sit ~12% of the face height above its centre
+    x = int(min(max(0.0, face_x * sw - W / 2), sw - W)) // 2 * 2
+    y = int(min(max(0.0, eye_y * sh - Hc / 3), sh - Hc)) // 2 * 2
+    return sw, sh, x, y
+
+
+def reaction_layout(W, H, src_w, src_h, inp, out, cam, bg='blur', hide_cam=True, fit='balanced', fill='mirror',
+                    face_rel=None):
+    """Reaction Priority: webcam on top (~40%), face centred with the eyes on the upper third; game below (~60%)."""
+    Hc = ev(REACTION_CAM_SHARE * H)
+    g = cam_geometry(W, H, src_w, src_h, cam, fit, panel_h=Hc, game_anchor=0.22)
+    cx, cy, cw, ch = g['cam']
+    fr = face_rel or cam.get('face_rel') or (0.5, 0.5)
+    # face position relative to the (border-trimmed) crop rather than to the detected overlay rectangle
+    fx = (cam['x'] * src_w + fr[0] * cam['w'] * src_w - cx) / cw
+    fy = (cam['y'] * src_h + fr[1] * cam['h'] * src_h - cy) / ch
+    fh = float(cam.get('face_h') or 0.45) * cam['h'] * src_h / ch
+    sw, sh, x, y = reaction_cam_crop(W, Hc, cw, ch, min(1.0, max(0.0, fx)), min(1.0, max(0.0, fy)), fh)
+    parts = [f'[{inp}]split=2[gsrc0][cam]',
+             f'[cam]crop={cw}:{ch}:{cx}:{cy},scale={sw}:{sh}:flags=lanczos,crop={W}:{Hc}:{x}:{y},'
+             f'unsharp=5:5:0.6:5:5:0.0,setsar=1[campanel]']
+    parts += _game_panel(W, src_w, src_h, g, bg, hide_cam, fill)
+    parts.append(f'[campanel][gpanel]vstack=inputs=2,setsar=1[{out}]')
+    # captions at the seam: over the lower (shoulder) part of the webcam and the gap above the game, never on the
+    # eyes/face and not over the game picture
+    seam_gap = g['game_y']
+    bottom_of_text = Hc + max(0.03 * H, min(seam_gap - 0.01 * H, 0.05 * H))
+    return ';'.join(parts), int(H - bottom_of_text)
+
+
+def action_crop_margin(H):
+    return int(0.24 * H)
 
 
 # ------------------------------------------------------------------ whole-clip graph
@@ -249,6 +300,13 @@ def seg_layout(seg, ctx, inp, out):
         return cam_layout(W, H, sw, sh, inp, out, ctx['cam'], bg=ctx['bg'], cam_position=ctx.get('cam_position', 'bottom'),
                           hide_cam=ctx.get('hide_cam', True), face_rel=seg.get('face_rel', (0.5, 0.5)),
                           fit=ctx.get('cam_fit', 'balanced'), fill=ctx.get('cam_fill', 'mirror'))
+    if typ == 'reaction_cam' and ctx.get('cam'):
+        return reaction_layout(W, H, sw, sh, inp, out, ctx['cam'], bg=ctx['bg'], hide_cam=ctx.get('hide_cam', True),
+                               fit=ctx.get('cam_fit', 'balanced'), fill=ctx.get('cam_fill', 'mirror'),
+                               face_rel=seg.get('face_rel'))
+    if typ == 'action':
+        chain, _ = crop_layout(W, H, sw, sh, inp, out, seg.get('path'), tol=ctx.get('path_tol', 3.0))
+        return chain, action_crop_margin(H)
     if typ in ('talking', 'smart', 'center'):
         return crop_layout(W, H, sw, sh, inp, out, seg.get('path'), tol=ctx.get('path_tol', 3.0))
     zoom = ctx.get('zoom', 1.0) if typ == 'gameplay' else 1.0     # 'fullframe' / 'screen' never zoom

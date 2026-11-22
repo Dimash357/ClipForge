@@ -22,6 +22,11 @@ STYLES = {
     'cinematic': {'label': 'Cinematic', 'font': 'Georgia', 'size': 54, 'bold': 0, 'italic': 1, 'primary': '#F2EBDD',
                   'active': '#F2EBDD', 'outline_c': '#000000', 'outline': 2, 'shadow': 3, 'upper': False, 'box': False,
                   'max_words': 5, 'highlight': False, 'anim': 'fade', 'wk': 0.50},
+    # one word at a time, big bold white with a black outline; key/emotional words turn yellow
+    'stream': {'label': 'Stream (по одному слову, ключевые — жёлтым)', 'font': 'Arial', 'size': 104, 'bold': 1,
+               'italic': 0, 'primary': '#FFFFFF', 'active': '#FFE14D', 'outline_c': '#000000', 'outline': 9,
+               'shadow': 2, 'upper': True, 'box': False, 'max_words': 1, 'highlight': False, 'key_highlight': True,
+               'anim': 'pop', 'wk': 0.64},
 }
 STYLE_CHOICES = [('classic', 'Classic (как в v4, резервный)')] + [(k, v['label']) for k, v in STYLES.items()]
 DEFAULT_STYLE = 'clean'
@@ -114,6 +119,26 @@ def _balanced_break(texts):
     return best_i
 
 
+def _norm(t):
+    return t.strip('.,!?…:;"«»()-–—').lower().replace('ё', 'е')
+
+
+def _key_words(words):
+    """Words to paint yellow: reaction cues (swearing, fails, exclamations...), emotional/hook words, numbers,
+    shouting in caps and the clip's main topic words."""
+    from . import highlights, moments
+    text = ' '.join(w['text'] for w in words)
+    keys = {_norm(k) for k in moments.key_words(text)}
+    for w in words:
+        t = w['text']
+        low = t.lower()
+        if (highlights.EMO.search(low) or highlights.HOOK.search(low) or
+                (highlights.SURPRISE.search(low) and len(_norm(t)) > 3) or t.rstrip('"»”)').endswith(('!', '?!'))):
+            keys.add(_norm(t))
+    keys |= {_norm(k) for k in tx.keywords(text, n=3)}
+    return {k for k in keys if k}
+
+
 def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE, max_words=None,
               margin_for=None, animate=True, highlight=None, font=None):
     """Write an ASS file for [start,end) (times shifted to 0). Returns a report dict.
@@ -138,7 +163,8 @@ def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE
         words = _segment_fallback_words(segments, start, end)
         do_hl = False
     max_chars = max(8, int(avail / (size * st['wk'] * (1.12 if st['upper'] else 1.0))) * 2 - 2)  # up to two lines
-    groups = group_words(words, mwords, max_chars)
+    groups = group_words(words, mwords, max_chars) if mwords > 1 else [[w] for w in words if _clean_word(w['text'])]
+    keys = _key_words(words) if st.get('key_highlight') and highlight is not False else set()
 
     margins = {}
     events = []
@@ -203,6 +229,8 @@ def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE
                 if eb - ea < 0.02:
                     continue
                 events.append((ea, eb, sname, (anim if k == 0 else '') + prefix + compose(k)))
+        elif keys and len(shown) == 1 and _norm(texts[0]) in keys:
+            events.append((a, b, sname, anim + prefix + compose(0)))
         else:
             events.append((a, b, sname, anim + prefix + compose(None)))
 
@@ -221,6 +249,7 @@ def build_ass(segments, start, end, dest, W=1080, H=1920, style_id=DEFAULT_STYLE
     for a, b, sname, text in events:
         lines.append(f'Dialogue: 0,{ass_time(a)},{ass_time(b)},{sname},,0,0,0,,{text}\n')
     dest.write_text(''.join(lines), encoding='utf-8')
-    return {'mode': 'word' if (do_hl and reliable) else 'segment', 'events': len(events), 'shrunk': shrunk,
+    return {'mode': 'word' if ((do_hl or mwords == 1) and reliable) else 'segment', 'events': len(events), 'shrunk': shrunk,
+            'key_words': len(keys),
             'groups': len(groups), 'words_reliable': reliable, 'style': style_id, 'max_words': mwords,
             'est_overflow': 0}

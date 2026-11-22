@@ -305,13 +305,15 @@ import hashlib
 import logging
 import time
 
-from . import audio_analysis, diagnostics, editor, exports, highlights, metadata, motion_analysis, quality, textutil as tx
+from . import (audio_analysis, diagnostics, editor, exports, highlights, metadata, motion_analysis, quality, scenes,
+               textutil as tx)
 from .jobs import set_state
 from .procutil import JobCancelled
 
 log = logging.getLogger('studio.pipeline')
 LEGACY_MODES = ('smart', 'center', 'gameplay', 'gameplay_facecam')
-NEEDS_ANALYSIS = ('director', 'smart', 'gameplay_facecam')
+NEEDS_ANALYSIS = ('director', 'smart', 'gameplay_facecam', 'reaction')
+CAM_MODES = ('director', 'gameplay_facecam', 'reaction')
 
 
 def fingerprint(path):
@@ -336,22 +338,34 @@ def clip_text(segments, start, end):
     return ' '.join(s['text'] for s in segments if s['end'] > start and s['start'] < end)
 
 
-def highlight_signals(source, duration, opts, vinfo=None, rep=None):
-    """Audio profile + lazy gameplay-motion probe for the multimodal ranker. Never raises (except cancel):
-    a broken/absent audio track or a decoder problem just means "rank on the transcript only"."""
-    audio = motion = None
+def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, wav=None):
+    """Audio profile, keyframe screen scan and a lazy gameplay-motion probe for the multimodal ranker.
+
+    Results are stored in / loaded from the source's analysis cache (`cache` dir), so re-picking moments or
+    re-editing never decodes the audio again. Never raises (except cancel): a broken/absent audio track or a
+    decoder problem just means "rank on what is available"."""
+    from . import analysis_cache as ac
+    audio = motion = screen = None
     notes = []
     if source is None:
         return audio, motion, notes
     cancel = rep.cancelled if rep else None
     if opts.get('highlight_audio', True):
         try:
-            audio = audio_analysis.analyze_file(
-                source, duration, cancel=cancel,
-                progress=(lambda f: rep.frac(0.8 * f, f'Слушаем звук: смех, крики, всплески... {int(f * 100)}%')) if rep else None)
-            if audio is None:
-                notes.append('no_audio')
+            hit = ac.load_npz(Path(cache) / 'audio.npz') if cache else None
+            audio = audio_analysis.from_arrays(hit) if hit else None
+            if audio is not None:
+                notes.append('audio_cached')
             else:
+                audio = audio_analysis.analyze_file(
+                    wav or source, duration, cancel=cancel,
+                    progress=(lambda f: rep.frac(0.6 * f, f'Слушаем звук: смех, крики, всплески... {int(f * 100)}%'))
+                    if rep else None)
+                if audio is None:
+                    notes.append('no_audio')
+                elif cache:
+                    ac.save_npz(Path(cache) / 'audio.npz', **audio_analysis.to_arrays(audio))
+            if audio is not None:
                 log.info('audio profile: %s', audio.summary())
         except JobCancelled:
             raise
@@ -360,18 +374,40 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None):
             notes.append('audio_failed')
             audio = None
     if opts.get('highlight_motion', True) and vinfo:
+        try:
+            hit = ac.load_npz(Path(cache) / 'screen.npz') if cache else None
+            screen = motion_analysis.screen_from_arrays(hit) if hit else None
+            if screen is None:
+                if rep:
+                    rep.frac(0.65, 'Смотрим на экран: смерти, провалы, вспышки, смены сцен...')
+                screen = motion_analysis.scan_keyframes(source, duration, cancel=cancel)
+                if screen is not None and cache:
+                    ac.save_npz(Path(cache) / 'screen.npz', **motion_analysis.screen_to_arrays(screen))
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            log.warning('screen scan failed (%s)', str(exc)[:300])
+            notes.append('screen_failed')
+            screen = None
+
         def motion(spans):
             if rep:
                 rep.frac(0.85, 'Оцениваем динамику геймплея у лучших кандидатов...')
             return motion_analysis.analyze_spans(source, spans, vinfo['width'], vinfo['height'], cancel=cancel)
+    highlight_signals.last_screen = screen
     return audio, motion, notes
 
 
-def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None):
+highlight_signals.last_screen = None
+
+
+def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None, cache=None, wav=None):
     """New ranker first; the proven v4 algorithm is the fallback when it errors or finds nothing."""
     if opts['highlight_engine'] == 'smart':
+        screen = None
         try:
-            audio, motion, _ = highlight_signals(source, duration, opts, vinfo, rep)
+            audio, motion, _ = highlight_signals(source, duration, opts, vinfo, rep, cache=cache, wav=wav)
+            screen = highlight_signals.last_screen
         except JobCancelled:
             raise
         except Exception:
@@ -380,7 +416,8 @@ def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=No
         try:
             sel = highlights.find_highlights(segments, duration, p.clip_min, p.clip_max, p.clip_count,
                                              rerank=ollama_rank if os.getenv('USE_OLLAMA', '0') == '1' else None,
-                                             audio=audio, motion=motion)
+                                             audio=audio, motion=motion, screen=screen,
+                                             auto_length=bool(opts.get('auto_length')))
             if sel:
                 for c in sel:
                     c['engine'] = 'smart'
@@ -438,7 +475,7 @@ def _ensure_source(p, rep):
     return Path(p.source.path)
 
 
-def _get_transcript(p, source, duration, fp, rep):
+def _get_transcript(p, source, duration, fp, rep, wav=None):
     meta = p.transcript_meta or {}
     if p.transcript and meta.get('requested_lang', p.language) == p.language:
         rep.skip('transcribe')
@@ -454,7 +491,7 @@ def _get_transcript(p, source, duration, fp, rep):
                 return other.transcript
     rep.stage('transcribe', 'Распознаём речь (первый запуск скачает модель Whisper)...')
     try:
-        segments = transcribe(source, p.language, rep=rep, duration=duration)
+        segments = transcribe(wav or source, p.language, rep=rep, duration=duration)
     except JobCancelled:
         raise
     except Exception as exc:
@@ -469,6 +506,60 @@ def _get_transcript(p, source, duration, fp, rep):
     info = dict(transcribe.last_info or {})
     set_state(p.pk, transcript=segments, transcript_meta=info)
     return segments
+
+
+def snap_bounds(segments, start, end):
+    """Manual bounds never cut a word: a start inside a word moves to the word's start, an end inside a word moves
+    to the word's end (+ a short breath)."""
+    for w in tx.flat_words(segments):
+        if w['start'] < start < w['end']:
+            start = max(0.0, w['start'] - 0.02)
+        if w['start'] < end < w['end']:
+            end = w['end'] + 0.08
+    return round(start, 2), round(end, 2)
+
+
+def _source_analysis(p, source, duration, vinfo, fp, rep):
+    """Steps 1-2: probe facts, webcam presence/position for the whole stream, mono 16 kHz audio.
+    Everything is cached per source fingerprint and re-used by later runs / other projects of the same video."""
+    from . import analysis_cache as ac
+    cache = ac.cache_dir(fp)
+    old = dict(p.analysis or {})
+    analysis = {'version': ac.VERSION, 'fingerprint': fp,
+                'probe': {'duration': round(duration, 2), 'width': vinfo['width'], 'height': vinfo['height'],
+                          'fps': round(vinfo['fps'], 2), 'has_audio': vinfo['has_audio']}}
+    cancel = rep.cancelled
+    wav = None
+    if vinfo['has_audio']:
+        try:
+            wav = ac.extract_audio(source, cache / 'audio16k.wav', duration=duration, cancel=cancel,
+                                   on_progress=lambda f: rep.frac(0.7 * f, f'Извлекаем звук (mono 16 kHz): {int(f * 100)}%'))
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            log.warning('audio extraction failed (%s); Whisper will read the source directly', str(exc)[:300])
+            wav = None
+    analysis['audio_wav'] = bool(wav)
+    if old.get('fingerprint') == fp and old.get('cam_checked') and old.get('cam_corner') == p.facecam_corner:
+        analysis['cam'] = old.get('cam')
+        analysis['cam_checked'] = True
+    elif p.edit_mode in CAM_MODES:
+        rep.frac(0.75, 'Ищем вебку стримера по всему видео...')
+        try:
+            analysis['cam'] = scenes.detect_source_cam(source, duration, vinfo['width'], vinfo['height'],
+                                                       corner_hint=p.facecam_corner, cancel=cancel)
+            analysis['cam_checked'] = True
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            log.warning('source webcam detection failed: %s', exc)
+            analysis['cam'] = None
+    else:
+        analysis['cam'] = old.get('cam') if old.get('fingerprint') == fp else None
+    analysis['cam_corner'] = p.facecam_corner
+    rep.frac(1.0)
+    set_state(p.pk, analysis=analysis)
+    return cache, wav, analysis
 
 
 def run_job(kind, pk, payload, rep):
@@ -493,9 +584,15 @@ def _run_full(pk, rep, payload):
     fp = p.source_fingerprint or fingerprint(source)
     set_state(pk, source_duration=duration, source_fingerprint=fp, status='processing')
     p.refresh_from_db()
-    segments = _get_transcript(p, source, duration, fp, rep)
+    cache, wav, analysis = _source_analysis(p, source, duration, vinfo, fp, rep)
+    segments = _get_transcript(p, source, duration, fp, rep, wav=wav)
+    p.refresh_from_db()
+    analysis['language'] = (p.transcript_meta or {}).get('detected_language') or p.language
     rep.stage('highlights', 'Ищем интересные моменты...', frac=None)
-    selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep)
+    selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep, cache=cache, wav=wav)
+    analysis['candidates'] = [{'start': c['start'], 'end': c['end'], 'interest': (c.get('scores') or {}).get('interest'),
+                               'engine': c.get('engine')} for c in selected]
+    set_state(pk, analysis=analysis)
     if not selected:
         raise ValueError('Не удалось найти подходящие фрагменты. Попробуйте видео длиннее или с более плотной речью.')
     # Replace previous results only now that a new selection exists (a failed rerun never wipes old clips).
@@ -507,7 +604,8 @@ def _run_full(pk, rep, payload):
     for i, c in enumerate(selected):
         clips.append(Clip.objects.create(
             project=p, start=c['start'], end=c['end'], score=c['score'], position=i, text=c['text'][:4000],
-            reason=c.get('reason', ''), scores=dict(c.get('scores') or {}, engine=c.get('engine')),
+            reason=c.get('reason', ''), scores=dict(c.get('scores') or {}, engine=c.get('engine'),
+                                                   auto_bounds=c.get('auto_bounds') or [c['start'], c['end']]),
             title=f'Highlight {i + 1}', status='candidate' if review else 'queued'))
     if review:
         set_state(pk, status='review', stage='', stage_progress=None,
@@ -534,6 +632,8 @@ def _run_render(pk, rep, payload):
         if b:
             s, e = float(b[0]), float(b[1])
             s, e = max(0.0, s), min(float(p.source_duration or vinfo['duration']), e)
+            if payload.get('snap'):
+                s, e = snap_bounds(segments, s, e)
             if e - s >= 3:
                 c.start, c.end = s, e
                 c.text = clip_text(segments, s, e)[:4000]
@@ -575,6 +675,10 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         per[c.pk] = {'opts': _clip_opts(p, c), 'mode': info.get('mode') or p.edit_mode,
                      'corner': info.get('corner') or p.facecam_corner}
     plans = {}
+    from . import analysis_cache as ac
+    p.refresh_from_db()
+    src_cam = (p.analysis or {}).get('cam')
+    cache = ac.cache_dir(p.source_fingerprint) if p.source_fingerprint else None
     any_analysis = any(v['mode'] in NEEDS_ANALYSIS for v in per.values())
     if any_analysis:
         rep.stage('scenes', 'Анализируем сцены (лица, facecam, тип кадра)...', frac=0.0)
@@ -586,7 +690,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         clip = {'start': c.start, 'end': c.end}
         if cfg['mode'] in NEEDS_ANALYSIS:
             plans[c.pk] = editor.prepare(source, clip, cfg['mode'], cfg['corner'], cfg['opts'], vinfo, rep=rep,
-                                         progress=lambda f, i=i: rep.frac((i + f) / n, f'Анализ сцен: клип {i + 1} из {n}'))
+                                         progress=lambda f, i=i: rep.frac((i + f) / n, f'Анализ сцен: клип {i + 1} из {n}'),
+                                         source_cam=src_cam, cache=cache)
         else:
             plans[c.pk] = editor.prepare(source, clip, cfg['mode'], cfg['corner'], cfg['opts'], vinfo, rep=rep)
         rep.frac((i + 1) / n)
@@ -654,9 +759,13 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             sibs = [(o.text, (o.start, o.end)) for o in Clip.objects.filter(project=p).exclude(pk=c.pk) if o.text]
             try:
                 cr = (c.render_info or {}).get('captions')
+                copts = per[c.pk]['opts'] if c.pk in per else base_opts
+                expect = {'size': exports.dims(copts), 'fps': int(copts['fps']) if copts['fps'] != 'source' else None,
+                          'lufs': (exports.LOUDNESS.get(copts.get('loudness')) or {}).get('I')}
                 c.quality = quality.validate_clip(c.video.path, c.end - c.start, source_has_audio=vinfo['has_audio'],
                                                   caption_report=cr, text=c.text, siblings=sibs,
-                                                  clip_min=p.clip_min, clip_max=p.clip_max, span=(c.start, c.end))
+                                                  clip_min=p.clip_min, clip_max=p.clip_max, span=(c.start, c.end),
+                                                  expect=None if (c.render_info or {}).get('fallback_renderer') else expect)
                 pt = Path(td) / f'poster_{c.pk}.jpg'
                 if quality.make_poster(c.video.path, pt, at=min(1.0, (c.end - c.start) / 3)):
                     with pt.open('rb') as f:

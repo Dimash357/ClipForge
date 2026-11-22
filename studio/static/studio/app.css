@@ -39,6 +39,7 @@ details{border:1px solid var(--line);border-radius:12px;padding:4px 14px;margin-
 .st-bold i,.st-gaming i,.st-karaoke i{font-style:normal;color:#ffe14d}.st-gaming{font-family:Impact,"Arial Black",sans-serif;text-transform:uppercase;text-shadow:2px 2px 0 #000}.st-gaming i{color:#39ff14}
 .st-karaoke{font-weight:800;text-shadow:0 2px 4px #000}.st-karaoke i{color:#ffc400}.st-cinematic{font-family:Georgia,serif;font-style:italic;color:#f2ebdd;text-shadow:0 2px 6px #000}
 .st-classic{font-weight:800;text-shadow:0 2px 3px #000}
+.st-stream{font-family:"Arial Black",Arial,sans-serif;font-weight:900;text-transform:uppercase;-webkit-text-stroke:1.5px #000;text-shadow:0 3px 0 #000}.st-stream i{font-style:normal;color:#ffe14d}
 /* history list */
 .hrow{display:flex;gap:12px;align-items:center;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:8px}
 .hrow:hover{border-color:#3a4260}.hrow .t{flex:1;min-width:0}.hrow .t div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}

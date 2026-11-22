@@ -8,16 +8,35 @@ from .procutil import run_capture
 
 
 def probe_streams(path):
-    d = json.loads(run_capture(['ffprobe', '-v', 'error', '-show_entries', 'format=duration:stream=codec_type,duration,width,height',
+    d = json.loads(run_capture(['ffprobe', '-v', 'error', '-show_entries',
+                                'format=duration:stream=codec_type,codec_name,duration,width,height,avg_frame_rate',
                                 '-of', 'json', str(path)], timeout=30))
-    out = {'format': float(d['format'].get('duration') or 0), 'video': None, 'audio': None, 'w': 0, 'h': 0}
+    out = {'format': float(d['format'].get('duration') or 0), 'video': None, 'audio': None, 'w': 0, 'h': 0,
+           'vcodec': None, 'acodec': None, 'fps': None}
     for s in d.get('streams', []):
         dur = float(s['duration']) if s.get('duration') not in (None, 'N/A') else None
         if s['codec_type'] == 'video':
             out['video'], out['w'], out['h'] = dur or out['format'], s.get('width', 0), s.get('height', 0)
+            out['vcodec'] = s.get('codec_name')
+            try:
+                a, b = s.get('avg_frame_rate', '0/1').split('/')
+                out['fps'] = float(a) / float(b) if float(b) else None
+            except (ValueError, ZeroDivisionError):
+                pass
         elif s['codec_type'] == 'audio':
             out['audio'] = dur or out['format']
+            out['acodec'] = s.get('codec_name')
     return out
+
+
+def parse_loudness(stderr):
+    """(integrated LUFS, true/sample peak dBFS) from the ebur128 summary, or (None, None)."""
+    i = re.findall(r'^\s*I:\s*(-?[\d.]+|-inf) LUFS', stderr, re.M)
+    pk = re.findall(r'^\s*Peak:\s*(-?[\d.]+|-inf) dBFS', stderr, re.M)
+
+    def num(v):
+        return None if not v or v[-1] == '-inf' else float(v[-1])
+    return num(i), num(pk)
 
 
 def parse_detect(stderr, total):
@@ -41,7 +60,7 @@ def parse_detect(stderr, total):
 def run_detectors(path, has_audio=True, timeout=300):
     cmd = ['ffmpeg', '-hide_banner', '-nostats', '-i', str(path), '-vf', 'blackdetect=d=0.4:pix_th=0.10']
     if has_audio:
-        cmd += ['-af', 'silencedetect=noise=-38dB:d=2.0']
+        cmd += ['-af', 'silencedetect=noise=-38dB:d=2.0,ebur128=peak=true:framelog=quiet']
     cmd += ['-f', 'null', '-']
     p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8', errors='replace',
                        timeout=timeout)
@@ -53,10 +72,18 @@ def _check(cid, status, label, detail=''):
 
 
 def validate_clip(path, expected, source_has_audio=True, caption_report=None, text='', siblings=(), clip_min=15,
-                  clip_max=60, span=None):
-    """siblings: [(text, (start, end))] of the other clips in the project (duplicate detection)."""
+                  clip_max=60, span=None, expect=None):
+    """siblings: [(text, (start, end))] of the other clips in the project (duplicate detection).
+    expect: optional export targets {'size': (W, H), 'fps': 30, 'lufs': -14.0}."""
     checks = []
+    expect = expect or {}
     st = probe_streams(path)
+    fmt_ok = st['vcodec'] == 'h264' and (st['audio'] is None or st['acodec'] == 'aac')
+    detail = f'{st["w"]}×{st["h"]}, {st["vcodec"]}/{st["acodec"] or "без звука"}, {st["fps"] or 0:.0f} FPS'
+    bad_size = expect.get('size') and (st['w'], st['h']) != tuple(expect['size'])
+    bad_fps = expect.get('fps') and st['fps'] and st['fps'] > expect['fps'] + 0.5
+    checks.append(_check('format', 'ok' if fmt_ok and not bad_size and not bad_fps else 'fail' if bad_size or not fmt_ok
+                         else 'warn', 'Формат (вертикаль, H.264, AAC, FPS)', detail))
     dur = st['video'] or st['format']
     diff = abs(dur - expected)
     checks.append(_check('duration', 'ok' if diff <= 0.6 else ('warn' if diff <= 1.5 else 'fail'), 'Длительность соответствует плану',
@@ -71,6 +98,17 @@ def validate_clip(path, expected, source_has_audio=True, caption_report=None, te
     try:
         err = run_detectors(path, has_audio=st['audio'] is not None)
         black, silence = parse_detect(err, dur)
+        if st['audio'] is not None and expect.get('lufs') is not None:
+            lufs, peak = parse_loudness(err)
+            if lufs is None:
+                checks.append(_check('loudness', 'warn', 'Громкость', 'не удалось измерить (тишина?)'))
+            else:
+                dev = abs(lufs - expect['lufs'])
+                status = 'ok' if dev <= 1.5 else 'warn'
+                if peak is not None and peak > -0.1:
+                    status = 'fail'
+                checks.append(_check('loudness', status, f'Громкость ≈ {expect["lufs"]:g} LUFS без перегрузки',
+                                     f'{lufs:.1f} LUFS, пик {peak if peak is not None else 0:.1f} dBFS'))
     except Exception as exc:
         black, silence = [], []
         checks.append(_check('detectors', 'warn', 'Проверка чёрных кадров и тишины', f'не выполнена: {str(exc)[:80]}'))

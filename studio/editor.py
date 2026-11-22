@@ -32,20 +32,41 @@ def probe_video(path):
             'duration': float(d['format'].get('duration') or 0)}
 
 
-def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None):
+def _analyze_cached(source, clip, w, h, corner, cancel, progress, faces, cache):
+    """Per-clip scene analysis, reused from the source's analysis cache when the same span was analysed before."""
+    from . import analysis_cache as ac
+    path = (Path(cache) / 'scenes' / ac.scene_key(clip['start'], clip['end'], faces)) if cache else None
+    if path and corner == 'auto':
+        hit = ac.load_json(path)
+        if hit and hit.get('samples') is not None:
+            hit['cached'] = True
+            return hit
+    analysis = scn.analyze(source, clip['start'], clip['end'], w, h, corner_hint=corner, cancel=cancel,
+                           progress=progress, detect_faces=faces)
+    if path and corner == 'auto':
+        try:
+            ac.save_json(path, analysis)
+        except Exception as exc:
+            log.warning('could not cache scene analysis: %s', exc)
+    return analysis
+
+
+def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None, source_cam=None, cache=None):
     """Analyse the clip's time range and decide the scene plan. Never raises for analysis problems:
-    on any failure the plan degrades to a safe single-layout fallback."""
+    on any failure the plan degrades to a safe single-layout fallback.
+
+    source_cam: webcam found by the whole-video scan (used when this clip's own frames are inconclusive).
+    cache: the source's analysis cache directory (per-clip scene analysis is stored there for fast re-edits)."""
     L = clip['end'] - clip['start']
     w, h = vinfo['width'], vinfo['height']
     cancel = rep.cancelled if rep else None
     info = {'mode': mode, 'analysis': 'skipped'}
     analysis = None
     notes = []
-    if mode in ('director', 'smart', 'gameplay_facecam', 'fullframe'):
+    if mode in ('director', 'smart', 'gameplay_facecam', 'fullframe', 'reaction'):
         try:
-            analysis = scn.analyze(source, clip['start'], clip['end'], w, h, corner_hint=corner, cancel=cancel,
-                                   progress=progress, detect_faces=(mode != 'fullframe'))
-            info['analysis'] = f'{len(analysis["samples"])} кадров'
+            analysis = _analyze_cached(source, clip, w, h, corner, cancel, progress, mode != 'fullframe', cache)
+            info['analysis'] = f'{len(analysis["samples"])} кадров' + (' (из кэша)' if analysis.get('cached') else '')
         except Exception as exc:
             from .procutil import JobCancelled
             if isinstance(exc, JobCancelled):
@@ -53,6 +74,8 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None):
             log.warning('scene analysis failed (%s); using safe fallback', exc)
             info['analysis'] = f'ошибка: {str(exc)[:120]}'
     cam = (analysis or {}).get('cam')
+    if not cam and source_cam and corner in ('auto', source_cam.get('corner')):
+        cam = dict(source_cam)
     forced = scn.manual_cam(corner) if corner != 'auto' else None
     cw, ch = layouts.crop_dims(w, h, *exports.dims(opts))
     hs = scn.hardsub_summary(analysis['samples']) if analysis else {'present': False}
@@ -111,14 +134,22 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None):
         else:
             segs = [{'start': 0.0, 'end': L, 'type': 'smart', 'path': path, 'face_found': found, 'confidence': 1.0,
                      'fallback': False}]
-    elif mode == 'gameplay_facecam':
+    elif mode in ('gameplay_facecam', 'reaction'):
         use_cam = cam or forced
-        if not use_cam:
-            use_cam = scn.manual_cam('top_right')
-            use_cam['source'] = 'default'
-        info['cam'] = use_cam
-        segs = [{'start': 0.0, 'end': L, 'type': 'game_cam', 'face_rel': use_cam.get('face_rel', (0.5, 0.5)),
-                 'confidence': use_cam['confidence'], 'fallback': False}]
+        if use_cam:
+            info['cam'] = use_cam
+            segs = [{'start': 0.0, 'end': L, 'type': 'game_cam' if mode == 'gameplay_facecam' else 'reaction_cam',
+                     'face_rel': use_cam.get('face_rel', (0.5, 0.5)), 'confidence': use_cam['confidence'],
+                     'fallback': False}]
+        else:
+            # no webcam in this stream: the whole vertical frame is gameplay, following the main action
+            path = None
+            if analysis and analysis['samples']:
+                path, _ = scn.track_action(analysis['samples'], 0.0, L, w, h, cw, ch)
+            segs = [{'start': 0.0, 'end': L, 'type': 'action', 'path': path, 'confidence': 1.0, 'fallback': False,
+                     'reason': 'no_webcam'}]
+            notes.append('Вебка не найдена — клип смонтирован как геймплей на весь вертикальный кадр с отслеживанием '
+                         'главного действия. Если вебка есть, укажите её угол вручную.')
     elif mode == 'fullframe':
         segs = [{'start': 0.0, 'end': L, 'type': 'fullframe', 'confidence': 1.0, 'fallback': False}]
     elif mode == 'gameplay':
@@ -128,7 +159,7 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None):
     # a director segment that wants a cam layout without a known cam must not crash the graph
     cam_known = info.get('cam')
     for sg in segs:
-        if sg['type'] == 'game_cam' and not cam_known:
+        if sg['type'] in ('game_cam', 'reaction_cam') and not cam_known:
             sg['type'] = opts['director_fallback']
             sg['fallback'] = True
     return {'segments': segs, 'cam': info.get('cam'), 'info': info, 'notes': notes}
@@ -169,17 +200,21 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
         cap_report = cap.build_ass(transcript, clip['start'], clip['end'], ass, W, H, opts['subtitle_style'],
                                    max_words=opts['caption_words'] or None, margin_for=margin_for,
                                    animate=opts['caption_animate'], highlight=opts['caption_highlight'])
+    af, loud_info = loudness_filter(source, clip['start'], L, opts, vinfo.get('has_audio', True),
+                                    cancel=rep.cancelled if rep else None)
     encoder, enc_note = diagnostics.choose_encoder(opts['encoder'])
     info = {'encoder': encoder, 'encoder_note': enc_note, 'graph_chars': len(graph), 'size': f'{W}x{H}',
             'segments': _public_segments(segs), 'captions': cap_report, 'mode': mode, 'notes': plan.get('notes', []), 'fps': fps or 'source',
-            'transition': transition, 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
+            'transition': transition, 'loudness': loud_info, 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
                                                                   for k, v in plan['cam'].items()}}
 
     def cmd_for(enc):
         c = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', f'{clip["start"]:.3f}', '-i', str(source),
              '-t', f'{L:.3f}', '-filter_complex', graph, '-map', '[vout]', '-map', '0:a:0?']
         c += exports.encoder_args(enc, opts)
-        c += ['-c:a', 'aac', '-b:a', '160k', '-movflags', '+faststart', str(dest)]
+        if af:
+            c += ['-af', af]
+        c += ['-c:a', 'aac', '-b:a', '160k', '-ar', '48000', '-movflags', '+faststart', str(dest)]
         return c
 
     cancel = rep.cancelled if rep else None
@@ -195,3 +230,50 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
         else:
             raise
     return info
+
+
+def measure_loudness(source, start, length, timeout=600, cancel=None):
+    """First loudnorm pass on the clip's audio -> measured values dict, or None (silent / no audio / error)."""
+    import re
+    import subprocess
+    cmd = ['ffmpeg', '-hide_banner', '-nostats', '-nostdin', '-ss', f'{start:.3f}', '-i', str(source), '-t', f'{length:.3f}',
+           '-vn', '-sn', '-map', '0:a:0?', '-af', 'loudnorm=I=-14:TP=-1.5:LRA=11:print_format=json', '-f', 'null', '-']
+    if cancel and cancel():
+        from .procutil import JobCancelled
+        raise JobCancelled()
+    p = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding='utf-8',
+                       errors='replace', timeout=timeout)
+    m = re.search(r'\{\s*"input_i".*?\}', p.stderr, re.S)
+    if p.returncode or not m:
+        return None
+    try:
+        d = json.loads(m.group(0))
+        vals = {k: float(d[k]) for k in ('input_i', 'input_tp', 'input_lra', 'input_thresh', 'target_offset')}
+    except (ValueError, KeyError):
+        return None
+    if not all(v == v and abs(v) != float('inf') for v in vals.values()) or vals['input_i'] < -60:
+        return None
+    return vals
+
+
+def loudness_filter(source, start, length, opts, has_audio=True, cancel=None):
+    """Two-pass EBU R128 normalisation to the export target (default -14 LUFS, true peak -1.5 dBTP).
+    Returns (audio filter or None, info dict). Falls back to single-pass loudnorm if measuring fails."""
+    target = exports.LOUDNESS.get(opts.get('loudness', 'stream'))
+    if not target or not has_audio:
+        return None, {'target': None}
+    base = f"loudnorm=I={target['I']:g}:TP={target['TP']:g}:LRA={target['LRA']:g}"
+    try:
+        m = measure_loudness(source, start, length, cancel=cancel)
+    except Exception as exc:
+        from .procutil import JobCancelled
+        if isinstance(exc, JobCancelled):
+            raise
+        log.warning('loudness measurement failed: %s', exc)
+        m = None
+    if m is None:
+        return base + ',aresample=48000', {'target': target['I'], 'mode': 'single-pass'}
+    f = (f"{base}:measured_I={m['input_i']:.2f}:measured_TP={m['input_tp']:.2f}:measured_LRA={m['input_lra']:.2f}:"
+         f"measured_thresh={m['input_thresh']:.2f}:offset={m['target_offset']:.2f}:linear=true,aresample=48000")
+    return f, {'target': target['I'], 'mode': 'two-pass', 'measured_i': round(m['input_i'], 1),
+               'measured_tp': round(m['input_tp'], 1)}

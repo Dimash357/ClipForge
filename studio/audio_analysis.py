@@ -383,3 +383,14 @@ def analyze_file(source, duration=None, cancel=None, progress=None, timeout=3600
     if len(db) < 20:
         return None
     return AudioProfile(db, hf, pitch, voiced, total / SR)
+
+
+# ------------------------------------------------------------------ cache (de)serialisation
+def to_arrays(p):
+    return {'db': p.db, 'hf': p.hf, 'pitch': p.pitch, 'voiced': p.voiced, 'duration': np.array(p.duration)}
+
+
+def from_arrays(d):
+    if not d or 'db' not in d:
+        return None
+    return AudioProfile(d['db'], d['hf'], d['pitch'], d['voiced'], float(d['duration']))

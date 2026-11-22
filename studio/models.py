@@ -26,6 +26,8 @@ class Project(models.Model):
     source_fingerprint = models.CharField(max_length=64, blank=True, default='')
     source_duration = models.FloatField(default=0)
     updated_at = models.DateTimeField(auto_now=True)
+    # --- v5.2: saved source analysis (probe, webcam, language, audio/screen summaries, candidate pool) ---
+    analysis = models.JSONField(default=dict, blank=True)
 
     def __str__(self):
         return self.title or f'Project {self.pk}'

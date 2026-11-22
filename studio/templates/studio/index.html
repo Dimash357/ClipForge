@@ -13,12 +13,12 @@
 
 <div class="panel"><h2>2 · Монтаж</h2>
 <div class="grid2"><div><label>Режим монтажа</label><select name="edit_mode">
-{% for k, label in edit_modes %}<option value="{{ k }}" {% if k == 'smart' %}selected{% endif %}>{% if k == 'director' or k == 'fullframe' %}★ {% endif %}{{ label }}</option>{% endfor %}</select>
-<div class="hint" style="margin-top:6px">★ «Без обрезки» показывает весь кадр целиком (для фильмов, интервью, видео с вшитыми титрами). ★ Director сам определяет сцены (игра / лицо / игра+камера / экран) и переключает раскладку внутри ролика.</div></div>
+{% for k, label in edit_modes %}<option value="{{ k }}" {% if k == 'smart' %}selected{% endif %}>{% if k == 'director' or k == 'fullframe' or k == 'reaction' %}★ {% endif %}{{ label }}</option>{% endfor %}</select>
+<div class="hint" style="margin-top:6px">★ Reaction Priority — для стримов: вебка сверху (лицо по центру), игра снизу; если вебки нет — игра на весь кадр с отслеживанием действия. Gameplay Priority — максимум игры, вебка внизу. ★ «Без обрезки» показывает весь кадр целиком (для фильмов, интервью, видео с вшитыми титрами). ★ Director сам определяет сцены (игра / лицо / игра+камера / экран) и переключает раскладку внутри ролика.</div></div>
 <div><label>Расположение facecam в исходнике</label><select name="facecam_corner"><option value="auto">Определить автоматически</option><option value="top_left">Сверху слева</option><option value="top_right">Сверху справа</option><option value="bottom_left">Снизу слева</option><option value="bottom_right">Снизу справа</option></select></div></div>
 <div class="grid3"><div><label>Язык речи</label><select name="language"><option value="auto">Определить автоматически</option><option value="ru">Русский</option><option value="en">English</option></select></div>
 <div><label>Количество клипов</label><select name="clip_count"><option>3</option><option>5</option><option>8</option></select></div>
-<div><label>Длительность клипа</label><select name="clip_length"><option value="short">Короткие (15–32 с)</option><option value="standard" selected>Стандарт (20–55 с)</option><option value="long">Длинные (45–90 с)</option></select></div></div></div>
+<div><label>Длительность клипа</label><select name="clip_length"><option value="auto" selected>Авто (12–60 с, по содержанию момента)</option><option value="short">Короткие (15–32 с)</option><option value="standard">Стандарт (20–55 с)</option><option value="long">Длинные (45–90 с)</option></select></div></div></div>
 
 <div class="panel"><h2>3 · Стиль субтитров</h2>
 <input type="hidden" name="present_captions" value="1">
@@ -28,7 +28,7 @@
 <div class="panel"><h2>4 · Экспорт</h2><div class="grid3">
 <div><label>Разрешение</label><select name="preset">{% for k, p in presets.items %}<option value="{{ k }}">{{ p.label }}</option>{% endfor %}</select></div>
 <div><label>Качество</label><select name="quality">{% for k, q in qualities.items %}<option value="{{ k }}" {% if k == 'balanced' %}selected{% endif %}>{{ q.label }}</option>{% endfor %}</select></div>
-<div><label>FPS <small>выше FPS исходника не поднимается</small></label><select name="fps"><option value="source">Как в исходнике</option><option value="30">30</option><option value="24">24</option><option value="60">60</option></select></div></div>
+<div><label>FPS <small>выше FPS исходника не поднимается</small></label><select name="fps"><option value="30" selected>30 (рекомендуется)</option><option value="source">Как в исходнике</option><option value="24">24</option><option value="60">60</option></select></div></div>
 <details><summary>Дополнительные настройки</summary>
 <input type="hidden" name="present_review_first" value="1"><input type="hidden" name="present_smart_tracking" value="1"><input type="hidden" name="present_hide_cam" value="1"><input type="hidden" name="present_caption_animate" value="1"><input type="hidden" name="present_text_guard" value="1"><input type="hidden" name="present_highlight_audio" value="1"><input type="hidden" name="present_highlight_motion" value="1">
 <div class="grid2"><div><label>Фон для горизонтального видео</label><select name="bg_fill"><option value="blur">Размытый фон (рекомендуется)</option><option value="solid">Однотонный фон</option><option value="focus">Gameplay Focus (небольшой зум)</option></select></div>
@@ -38,6 +38,7 @@
 <div><label>Слов в субтитрах <small>0 = по стилю</small></label><input type="number" name="caption_words" min="0" max="6" value="0"></div>
 <div><label>Поиск моментов</label><select name="highlight_engine"><option value="smart">Улучшенный (оценки Hook / Context / Engagement / Completeness)</option><option value="classic">Классический алгоритм v4</option></select></div>
 <div><label>Игра в Gameplay + Facecam</label><select name="cam_fit"><option value="balanced">Баланс: крупнее, обрезка по бокам до 16% (рекомендуется)</option><option value="full">Вся картинка без обрезки</option><option value="fill">Крупно: обрезка по бокам до 30%</option></select></div>
+<div><label>Громкость</label><select name="loudness"><option value="stream">−14 LUFS без перегрузок (Shorts/TikTok)</option><option value="off">Как в исходнике</option></select></div>
 <div><label>Как убрать вебку из игры</label><select name="cam_fill"><option value="mirror">Кадрирование + восстановление из соседней области (без блюра)</option><option value="blur">Затемнённая пикселизация (как в v5)</option></select></div></div>
 <label class="check"><input type="checkbox" name="review_first"> Сначала показать найденные фрагменты, затем рендерить после моего подтверждения (предпросмотр и правка границ)</label>
 <label class="check"><input type="checkbox" name="smart_tracking" checked> Плавно следить за лицом в Smart Reframe</label>

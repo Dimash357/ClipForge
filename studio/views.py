@@ -21,11 +21,11 @@ from .youtube_download import retrieve_and_process  # noqa: F401
 
 MAX_UPLOAD = 1024 * 1024 * 1024
 CORNERS = ('auto', 'top_left', 'top_right', 'bottom_left', 'bottom_right')
-LENGTHS = {'short': (15, 32), 'standard': (20, 55), 'long': (45, 90)}
+LENGTHS = {'auto': (12, 60), 'short': (15, 32), 'standard': (20, 55), 'long': (45, 90)}
 OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'caption_words', 'caption_animate', 'bg_fill',
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
-                 'highlight_audio', 'highlight_motion')
+                 'highlight_audio', 'highlight_motion', 'loudness')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
               'highlight_motion')
 
@@ -89,8 +89,10 @@ def index(request):
         corner = request.POST.get('facecam_corner', 'auto')
         if corner not in CORNERS:
             corner = 'auto'
-        cmin, cmax = LENGTHS.get(request.POST.get('clip_length', 'standard'), LENGTHS['standard'])
+        length_key = request.POST.get('clip_length', 'standard')
+        cmin, cmax = LENGTHS.get(length_key, LENGTHS['standard'])
         opts = _options_from_post(request.POST)
+        opts['auto_length'] = length_key == 'auto'
         title = (f.name if f else local_source.name if local_source else 'YouTube ' + parse_youtube_url(url))[:250]
         obj = Project(edit_mode=mode, facecam_corner=corner, title=title, youtube_url=url, language=lang,
                       clip_count=count, clip_min=cmin, clip_max=cmax, options=opts)
@@ -167,7 +169,16 @@ def status(request, pk):
         'stage_progress': p.stage_progress, 'stages': _stage_states(p), 'active': jobs.is_active(pk),
         'cancel_requested': p.cancel_requested, 'mode': p.edit_mode, 'source_url': _file_url(p.source),
         'source_duration': p.source_duration, 'transcript_ready': bool(p.transcript),
-        'transcript_meta': p.transcript_meta, 'clips': clips})
+        'transcript_meta': p.transcript_meta, 'analysis': _analysis_summary(p), 'clips': clips})
+
+
+def _analysis_summary(p):
+    a = p.analysis or {}
+    if not a:
+        return None
+    cam = a.get('cam')
+    return {'probe': a.get('probe'), 'language': a.get('language'), 'cam': cam.get('corner') if cam else None,
+            'cam_checked': bool(a.get('cam_checked')), 'audio_wav': a.get('audio_wav')}
 
 
 def _json_body(request):
@@ -251,7 +262,7 @@ def render_clips(request, pk):
     if not ids:
         return JsonResponse({'error': 'Не выбрано ни одного клипа.'}, status=400)
     payload = {'clip_ids': ids, 'bounds': bounds, 'discard_others': bool(data.get('discard_others')),
-               'apply_to_project': bool(data.get('apply_to_project'))}
+               'apply_to_project': bool(data.get('apply_to_project')), 'snap': bool(data.get('snap'))}
     if data.get('mode') in exports.MODE_KEYS:
         payload['mode'] = data['mode']
     if data.get('corner') in CORNERS:
@@ -270,7 +281,8 @@ def rerender_clip(request, pk):
     clip = get_object_or_404(Clip, pk=pk)
     data = _json_body(request)
     body = {'clips': [{'id': clip.pk, **({'start': data['start'], 'end': data['end']} if 'start' in data and 'end' in data else {})}],
-            'mode': data.get('mode'), 'corner': data.get('corner'), 'overrides': data.get('overrides')}
+            'mode': data.get('mode'), 'corner': data.get('corner'), 'overrides': data.get('overrides'),
+            'snap': bool(data.get('snap'))}
     request._body = json.dumps(body).encode()
     return render_clips(request, clip.project_id)
 
