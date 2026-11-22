@@ -9,7 +9,11 @@ MIDDLEWARE=['django.middleware.security.SecurityMiddleware','django.contrib.sess
 ROOT_URLCONF='clipforge.urls'
 TEMPLATES=[{'BACKEND':'django.template.backends.django.DjangoTemplates','DIRS':[],'APP_DIRS':True,'OPTIONS':{'context_processors':['django.template.context_processors.debug','django.template.context_processors.request','django.contrib.auth.context_processors.auth','django.contrib.messages.context_processors.messages']}}]
 WSGI_APPLICATION='clipforge.wsgi.application'
-DATABASES={'default':{'ENGINE':'django.db.backends.sqlite3','NAME':BASE_DIR/'db.sqlite3','OPTIONS':{'timeout':30}}}
+DATABASES={'default':{'ENGINE':'django.db.backends.sqlite3','NAME':BASE_DIR/'db.sqlite3','OPTIONS':{'timeout':30},
+                       # tests use a temporary *file* database: the default in-memory shared-cache DB fails with
+                       # "database table is locked" when a worker thread writes while the test thread reads
+                       # (WAL + busy_timeout, used by the real db.sqlite3, only work for file databases).
+                       'TEST':{'NAME':str(Path(__import__('tempfile').gettempdir())/f'clipforge_test_{os.getpid()}.sqlite3')}}}
 STATIC_URL='static/'
 MEDIA_URL='media/'
 MEDIA_ROOT=BASE_DIR/'media'

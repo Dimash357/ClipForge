@@ -18,3 +18,7 @@ venv/
 .idea/
 .DS_Store
 Thumbs.db
+
+# ClipForge local data
+backups/
+ffmpeg/
