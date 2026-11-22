@@ -8,7 +8,7 @@
 <label>YouTube-ссылка <small>для метаданных и получения разрешённого видео</small></label>
 <div class="urlrow"><input id="youtube_url" type="url" name="youtube_url" placeholder="https://www.youtube.com/watch?v=..."><button type="button" class="secondary" id="lookupbtn">Проверить</button></div>
 <div id="meta" class="meta"></div><div id="source_status" class="hint"></div>
-<label>Или загрузите файл <small>MP4 / MOV / MKV / WEBM, до 1 ГБ</small></label><input type="file" name="source" accept=".mp4,.mov,.mkv,.webm">
+<label>Или загрузите файл <small>MP4 / MOV / MKV / WEBM, до {{ max_source_gb }} ГБ</small></label><input type="file" name="source" accept=".mp4,.mov,.mkv,.webm">
 <label class="check"><input type="checkbox" name="auto_fetch" checked> Автоматически получить видео по ссылке (только если у меня есть права и доступ разрешён условиями YouTube).</label></div>
 
 <div class="panel"><h2>2 · Монтаж</h2>

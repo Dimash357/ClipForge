@@ -20,7 +20,7 @@ from .source_library import find_source
 from .youtube import get_metadata, parse_youtube_url
 from .youtube_download import retrieve_and_process  # noqa: F401
 
-MAX_UPLOAD = 1024 * 1024 * 1024
+MAX_UPLOAD = settings.MAX_SOURCE_BYTES
 CORNERS = ('auto', 'top_left', 'top_right', 'bottom_left', 'bottom_right')
 LENGTHS = {'auto': (12, 60), 'short': (15, 32), 'standard': (20, 55), 'long': (45, 90)}
 OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'caption_words', 'caption_animate', 'bg_fill',
@@ -34,7 +34,7 @@ CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'revi
 def _ctx_index(**extra):
     base = {'projects': Project.objects.order_by('-created_at')[:8], 'edit_modes': exports.EDIT_MODES,
             'styles': captions.STYLE_CHOICES, 'presets': exports.PRESETS, 'qualities': exports.QUALITY,
-            'defaults': exports.DEFAULTS}
+            'defaults': exports.DEFAULTS, 'max_source_gb': round(settings.MAX_SOURCE_BYTES / 1024 ** 3)}
     base.update(extra)
     return base
 
@@ -69,7 +69,8 @@ def index(request):
         if not f and not local_source and not auto_fetch:
             return _err(request, 'Исходник не найден. Включите автоматическое получение разрешённого видео по ссылке либо загрузите файл.')
         if f and (f.size > MAX_UPLOAD or not f.name.lower().endswith(('.mp4', '.mov', '.mkv', '.webm'))):
-            return _err(request, 'Допустимы MP4, MOV, MKV, WEBM до 1 ГБ.')
+            return _err(request, f'Допустимы MP4, MOV, MKV, WEBM до {MAX_UPLOAD / 1024 ** 3:.0f} ГБ. Большие файлы можно '
+                                 'положить в папку source_library (имя файла = ID YouTube-видео) — без загрузки.')
         if not request.POST.get('rights'):
             return _err(request, 'Подтвердите право на обработку файла.')
         if url:

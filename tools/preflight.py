@@ -112,6 +112,20 @@ def check_ffmpeg():
     return 0
 
 
+# ------------------------------------------------------------------ YouTube downloads
+def check_js_runtime(which=shutil.which):
+    """yt-dlp needs deno (or Node.js) to see all YouTube formats; without it a download may come without video."""
+    if which('deno'):
+        ok('JavaScript для yt-dlp: deno')
+    elif which('node'):
+        ok('JavaScript для yt-dlp: Node.js')
+    else:
+        warn('Для скачивания с YouTube нужен deno или Node.js (иначе YouTube может отдать только звук).\n'
+             '     Установка: winget install DenoLand.Deno  — затем откройте новое окно cmd.\n'
+             '     Загрузка файлов и папка source_library работают и без этого.')
+    return 0
+
+
 # ------------------------------------------------------------------ dependencies
 def installed_version(dist):
     try:
@@ -237,8 +251,10 @@ def main(argv):
         except Exception as exc:
             fail(f'Не удалось сделать резервную копию базы: {exc}. Миграции не запускаю — данные в безопасности.')
             return 1
+    if cmd == 'js':
+        return check_js_runtime()
     if cmd == 'all':
-        return check_venv() or check_ffmpeg() or check_deps()
+        return check_venv() or check_ffmpeg() or check_deps() or check_js_runtime()
     print(__doc__)
     return 2
 

@@ -147,3 +147,9 @@ class BatchScripts(SimpleTestCase):
                 self.assertIn(target, labels, (n, target))
             for target in re.findall(r'call :(\w+)', text):
                 self.assertIn(target, labels, (n, target))
+
+
+class JsRuntime(SimpleTestCase):
+    def test_messages(self):
+        self.assertEqual(pf.check_js_runtime(which=lambda n: None), 0)          # only a warning
+        self.assertEqual(pf.check_js_runtime(which=lambda n: '/x/deno' if n == 'deno' else None), 0)

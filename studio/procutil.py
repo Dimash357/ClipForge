@@ -95,3 +95,25 @@ def run_capture(args, timeout=60, cwd=None):
     if p.returncode:
         raise RuntimeError((p.stderr or p.stdout)[-1700:])
     return p.stdout
+
+
+def media_streams(path, timeout=60):
+    """[(codec_type, codec_name)] of a media file via ffprobe; [] if it cannot be read."""
+    import json
+    try:
+        out = run_capture(['ffprobe', '-v', 'error', '-show_entries', 'stream=codec_type,codec_name', '-of', 'json',
+                           str(path)], timeout=timeout)
+        return [(st.get('codec_type'), st.get('codec_name')) for st in json.loads(out).get('streams', [])]
+    except Exception:
+        return []
+
+
+def has_video(path):
+    return any(t == 'video' and c not in ('mjpeg', 'png') for t, c in media_streams(path))
+
+
+def describe_streams(path):
+    st = media_streams(path)
+    if not st:
+        return 'ffprobe не смог прочитать файл'
+    return ', '.join(f'{t}:{c}' for t, c in st)

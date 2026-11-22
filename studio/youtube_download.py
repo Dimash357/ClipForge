@@ -15,9 +15,13 @@ from django.db import close_old_connections
 from .models import Project
 from .youtube import parse_youtube_url
 
-MAX_BYTES = 1024 ** 3
-DOWNLOAD_TIMEOUT = 1800  # 30 minutes overall
-STALL_TIMEOUT = 180  # No output for three minutes
+from django.conf import settings
+
+MAX_BYTES = getattr(settings, 'MAX_SOURCE_BYTES', 8 * 1024 ** 3)
+DOWNLOAD_TIMEOUT = int(float(os.getenv('CLIPFORGE_DOWNLOAD_MINUTES', '120')) * 60)   # long streams are big
+# never accept a format without video: every fallback requires a video codec
+FORMAT = 'bv*[height<=1080]+ba/b[height<=1080][vcodec!=none]/bv*+ba/b[vcodec!=none]'
+STALL_TIMEOUT = 300  # No output for five minutes (merging a long stream is silent)
 POLL_SECONDS = 1
 PROGRESS_RE = re.compile(r"CLIPFORGE_PROGRESS:\s*([\d.]+)%")
 
@@ -43,15 +47,44 @@ def _stop_tree(proc):
         proc.wait()
 
 
+def js_runtime_args():
+    """yt-dlp needs a JavaScript runtime for the full YouTube format list (otherwise video formats may be missing).
+    deno is used automatically; Node.js has to be enabled explicitly."""
+    import shutil
+    if shutil.which('deno'):
+        return []
+    if shutil.which('node') and _ytdlp_version() >= (2025, 11):
+        return ['--js-runtimes', 'node']
+    return []
+
+
+def _ytdlp_version():
+    try:
+        from yt_dlp.version import __version__ as v
+        return tuple(int(x) for x in v.split('.')[:2])
+    except Exception:
+        return (0, 0)
+
+
+def _keep_log(pk, log_path):
+    """Copy yt-dlp's log to logs/ytdlp-<project>.log so a failed or odd download can be diagnosed later."""
+    try:
+        logs = Path(settings.BASE_DIR) / 'logs'
+        logs.mkdir(exist_ok=True)
+        (logs / f'ytdlp-{pk}.log').write_bytes(log_path.read_bytes()[-200000:])
+    except Exception:
+        pass
+
+
 def _download(pk, video_id, destination, rep=None):
     # sys.executable avoids depending on yt-dlp.exe being present in PATH.
     cmd = [
         sys.executable, '-m', 'yt_dlp', '--no-playlist',
         '--newline', '--progress-template', 'download:CLIPFORGE_PROGRESS:%(progress._percent_str)s',
         '--no-write-info-json', '--no-write-thumbnail',
-        '--max-filesize', '1G', '--socket-timeout', '20', '--retries', '2',
-        '--fragment-retries', '2', '--merge-output-format', 'mp4',
-        '-f', 'bv*[height<=1080]+ba/b[height<=1080]/best',
+        '--max-filesize', str(MAX_BYTES), '--socket-timeout', '20', '--retries', '3',
+        '--fragment-retries', '3', '--merge-output-format', 'mp4',
+        '-f', FORMAT, *js_runtime_args(),
         '-o', str(destination / '%(id)s.%(ext)s'),
         'https://www.youtube.com/watch?v=' + video_id,
     ]
@@ -91,15 +124,16 @@ def _download(pk, video_id, destination, rep=None):
                 if proc.poll() is not None:
                     break
                 if now - started > DOWNLOAD_TIMEOUT:
-                    raise TimeoutError('Превышен лимит загрузки: 30 минут.')
+                    raise TimeoutError(f'Превышен лимит загрузки: {DOWNLOAD_TIMEOUT // 60} минут (CLIPFORGE_DOWNLOAD_MINUTES).')
                 if now - last_output > STALL_TIMEOUT:
-                    raise TimeoutError('yt-dlp не выводит новых сообщений более 3 минут.')
+                    raise TimeoutError('yt-dlp не выводит новых сообщений более 5 минут.')
             if proc.returncode != 0:
                 tail = log_path.read_bytes()[-4000:].decode('utf-8', errors='replace')
                 raise RuntimeError('yt-dlp завершился с ошибкой: ' + tail[-1500:])
     finally:
         if proc is not None:
             _stop_tree(proc)
+        _keep_log(pk, log_path)
 
 
 def fetch_source(pk, rep=None):
@@ -110,9 +144,10 @@ def fetch_source(pk, rep=None):
     if not video_id:
         raise ValueError('Некорректная YouTube-ссылка.')
     # Same video already on disk in another project -> no second download.
+    from .procutil import describe_streams, has_video
     for other in Project.objects.filter(youtube_url=p.youtube_url).exclude(pk=pk).exclude(source=''):
         try:
-            if other.source and _P(other.source.path).is_file():
+            if other.source and _P(other.source.path).is_file() and has_video(other.source.path):
                 Project.objects.filter(pk=pk).update(source=other.source.name)
                 if rep is not None:
                     rep.frac(1.0, 'Видео уже скачано в другом проекте — используем его')
@@ -129,7 +164,14 @@ def fetch_source(pk, rep=None):
             raise RuntimeError('После загрузки не найден ровно один готовый видеофайл.')
         src = files[0]
         if src.stat().st_size > MAX_BYTES:
-            raise RuntimeError('Видео превышает лимит 1 ГБ.')
+            raise RuntimeError(f'Видео превышает лимит {MAX_BYTES / 1024 ** 3:.0f} ГБ '
+                               '(можно поднять: set CLIPFORGE_MAX_SOURCE_GB=16).')
+        if not has_video(src):
+            hint = ('' if js_runtime_args() or __import__('shutil').which('deno') else
+                    ' Скорее всего, yt-dlp не получил видеоформаты: для YouTube ему нужен JavaScript-движок — '
+                    'установите deno (winget install DenoLand.Deno) или Node.js и нажмите «Продолжить».')
+            raise RuntimeError(f'YouTube отдал файл без видеодорожки ({describe_streams(src)}).{hint} '
+                               f'Журнал загрузки: logs\\ytdlp-{pk}.log')
         with src.open('rb') as stream:
             p.source.save(video_id + src.suffix, File(stream), save=True)
 

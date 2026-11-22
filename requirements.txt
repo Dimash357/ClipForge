@@ -2,7 +2,8 @@ Django>=5.1,<6.0
 faster-whisper>=1.1,<2.0
 requests>=2.31
 Pillow>=10.0
-yt-dlp>=2025.1
+# [default] adds yt-dlp-ejs (YouTube JS challenge solver; needs deno or Node.js on the PC)
+yt-dlp[default]>=2025.11
 
 # Tested compatibility with faster-whisper 1.2.1
 av==16.1.0

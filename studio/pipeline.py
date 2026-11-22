@@ -32,7 +32,9 @@ def probe(path):
     if not math.isfinite(duration) or duration < 5 or duration > 4*3600:
         raise ValueError('Поддерживаются видео от 5 секунд до 4 часов.')
     if not any(s.get('codec_type') == 'video' for s in d.get('streams', [])):
-        raise ValueError('Видео-поток не найден.')
+        kinds = ', '.join(sorted({s.get('codec_type', '?') for s in d.get('streams', [])})) or 'нет дорожек'
+        raise ValueError(f'Видео-поток не найден: в файле только {kinds}. Если видео скачивалось по ссылке, '
+                         'нажмите «Продолжить» — ClipForge скачает его заново (подробности в logs\\ytdlp-*.log).')
     return duration
 
 
@@ -466,9 +468,20 @@ def _preflight():
 
 
 def _ensure_source(p, rep):
+    from .procutil import describe_streams, has_video
     if p.source and Path(p.source.path).is_file():
-        rep.skip('fetch')
-        return Path(p.source.path)
+        path = Path(p.source.path)
+        if has_video(path):
+            rep.skip('fetch')
+            return path
+        if not p.youtube_url:
+            raise RuntimeError(f'В загруженном файле нет видеодорожки ({describe_streams(path)}). '
+                               'Загрузите файл с видео.')
+        # an earlier download kept only the audio: fetch the video again (the old file is left untouched)
+        log.warning('project %s: source %s has no video stream (%s); downloading again', p.pk, path.name,
+                    describe_streams(path))
+        Project.objects.filter(pk=p.pk).update(source='')
+        p.refresh_from_db()
     if not p.youtube_url:
         raise RuntimeError('Исходный файл не найден на диске. Загрузите видео заново.')
     from .youtube_download import fetch_source

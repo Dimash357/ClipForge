@@ -100,13 +100,16 @@ class AutoreloadGuard(SimpleTestCase):
                 self.assertFalse(apps.is_serving_process(), cmd)
 
 
+@skipUnless(HAVE_FFMPEG, 'needs ffmpeg')
 class DownloadReuse(TestCase):
     def test_same_video_is_not_downloaded_twice(self):
         from studio import youtube_download as yd
         url = 'https://youtu.be/dQw4w9WgXcQ'
         with tempfile.TemporaryDirectory() as media, override_settings(MEDIA_ROOT=media):
             a = Project.objects.create(title='a', youtube_url=url)
-            a.source.save('dQw4w9WgXcQ.mp4', ContentFile(b'x' * 50), save=True)
+            # a real (tiny) video: a file without a video stream is never reused (see test_sources)
+            with open(sample_video(), 'rb') as f:
+                a.source.save('dQw4w9WgXcQ.mp4', ContentFile(f.read()), save=True)
             b = Project.objects.create(title='b', youtube_url=url)
             with mock.patch.object(yd, '_download', side_effect=AssertionError('must not download again')):
                 yd.fetch_source(b.pk)
