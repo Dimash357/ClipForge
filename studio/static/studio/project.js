@@ -13,7 +13,7 @@ function h(tag, attrs, ...kids) {
   return e;
 }
 const TYPES = {reaction_cam: 'Вебка + игра', action: 'Игра (за действием)', fullframe: 'Весь кадр', gameplay: 'Игра', game_cam: 'Игра + камера', talking: 'Автор', screen: 'Экран', smart: 'Smart', center: 'Центр'};
-const MODES = {reaction: 'Reaction Priority', fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay Priority', gameplay: 'Gameplay', center: 'Центр'};
+const MODES = {auto: 'AI Auto', reaction: 'Reaction Priority', fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay Priority', gameplay: 'Gameplay', center: 'Центр'};
 const STATUS = {done: 'Готово', error: 'Ошибка', cancelled: 'Остановлено', interrupted: 'Прервано', review: 'Ждёт подтверждения', processing: 'В работе', fetching: 'Загрузка', queued: 'В очереди'};
 let data = null, timer = null;
 const cards = new Map(), cand = new Map();
@@ -127,17 +127,27 @@ function qualityChip(q) {
   if (!q || q.score == null) return h('span', {class: 'chip', text: 'Проверка…'});
   return h('span', {class: 'chip ' + (q.score >= 85 ? 'q-ok' : q.score >= 60 ? 'q-warn' : 'q-bad'), text: `Качество ${q.score}/100`});
 }
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (e) {
+    const ta = h('textarea', {style: 'position:fixed;left:-9999px'}); ta.value = text; document.body.append(ta); ta.select();
+    let ok = false; try { ok = document.execCommand('copy'); } catch (e2) {} ta.remove(); return ok;
+  }
+}
 function copyBtn(text, label) {
-  return h('button', {class: 'secondary', type: 'button', text: label || text, title: 'Копировать', onclick: async ev => { try { await navigator.clipboard.writeText(text); ev.target.dataset.o = ev.target.textContent; ev.target.textContent = '✓ Скопировано'; setTimeout(() => ev.target.textContent = ev.target.dataset.o, 1200); } catch (e) {} }});
+  return h('button', {class: 'secondary', type: 'button', text: label || text, title: 'Копировать', onclick: async ev => {
+    const b = ev.currentTarget; const ok = await copyText(text); b.dataset.o = b.dataset.o || b.textContent;
+    b.textContent = ok ? '✓ Скопировано' : 'Не удалось скопировать'; setTimeout(() => b.textContent = b.dataset.o, 1200); }});
 }
 function clipCard(c) {
   const media = c.url ? h('video', {controls: true, preload: 'metadata', poster: c.poster || false, src: c.url}) :
     h('div', {class: 'ph', text: c.status === 'error' ? 'Ошибка рендера' : c.status === 'rendering' ? 'Рендерится…' : c.status === 'queued' ? 'В очереди' : 'Ещё не отрендерен'});
   const meta = c.meta || {};
   const kids = [media,
-    h('div', {class: 'row'}, h('span', {class: 'chip', text: `${c.duration} с`}), h('span', {class: 'chip', text: MODES[c.mode] || c.mode}), c.quality ? qualityChip(c.quality) : null,
+    h('div', {class: 'row'}, h('span', {class: 'chip', text: `${c.duration} с`}),
+      h('span', {class: 'chip', title: c.auto ? c.auto.reason : '', text: c.auto ? `AI Auto → ${c.auto.label}` : (MODES[c.mode] || c.mode)}), c.quality ? qualityChip(c.quality) : null,
       c.fallback_renderer ? h('span', {class: 'chip q-warn', text: 'резервный рендер v4'}) : null, h('span', {class: 'chip', text: `Score ${c.score}`})),
     h('h3', {text: c.title})];
+  if (c.status === 'ready') kids.push(shortMeta(c));
   if (c.error) kids.push(h('div', {class: 'error', text: c.error}));
   for (const n of (c.notes || [])) kids.push(h('div', {class: 'notice', text: 'ℹ ' + n}));
   const tl = timeline(c); if (tl) kids.push(tl);
@@ -163,6 +173,35 @@ function clipCard(c) {
   if (c.encoder) kids.push(h('div', {class: 'hint', text: `Кодирование: ${c.encoder}`}));
   return h('div', {class: 'clip'}, kids);
 }
+// ---------------------------------------------------------------- Shorts title + description
+function shortMeta(c) {
+  const s = c.short;
+  const box = h('div', {class: 'shortmeta'});
+  const err = h('div', {class: 'error', style: 'display:none'});
+  const gen = async (btn) => {
+    btn.disabled = true; const old = btn.textContent; btn.textContent = '… генерируем';
+    try {
+      const r = await post(`/api/clips/${c.id}/short-meta/`, {regenerate: true});
+      const j = await r.json().catch(() => ({error: `Ошибка сервера (${r.status}). Обновите страницу.`}));
+      if (!r.ok) { err.textContent = j.error || 'Ошибка'; err.style.display = 'block'; return; }
+      c.short = j.short; c.title = j.title; const card = cards.get(c.id);
+      const el = clipCard(c); if (card) { card.el.replaceWith(el); card.el = el; }
+    } catch (e) { err.textContent = 'Сервер недоступен'; err.style.display = 'block'; }
+    finally { btn.disabled = false; btn.textContent = old; }
+  };
+  if (!s) {
+    box.append(h('div', {class: 'hint', text: 'Название и описание для Shorts ещё не созданы.'}),
+      h('div', {class: 'row'}, h('button', {type: 'button', text: '✨ Сгенерировать название и описание', onclick: ev => gen(ev.target)})), err);
+    return box;
+  }
+  box.append(
+    h('label', {text: 'Название для YouTube Shorts'}), h('div', {class: 'sm-title', text: s.title}),
+    h('label', {text: 'Описание'}), h('div', {class: 'sm-desc', text: s.text || s.description}),
+    h('div', {class: 'row'}, copyBtn(s.title, '📋 Скопировать название'), copyBtn(s.text || s.description, '📋 Скопировать описание'),
+      h('button', {type: 'button', text: '↻ Сгенерировать заново', onclick: ev => gen(ev.target)})),
+    h('div', {class: 'hint', text: s.provider === 'local' ? 'Составлено локально из речи и событий клипа (без API)' : `Сгенерировано AI: ${s.provider}`}), err);
+  return box;
+}
 function renderClips(d) {
   const wrap = $('clips'); const list = d.clips.filter(c => c.status !== 'candidate');
   if (!list.length) return;
@@ -170,7 +209,7 @@ function renderClips(d) {
   const ids = new Set(list.map(c => c.id));
   for (const [id, v] of cards) if (!ids.has(id)) { v.el.remove(); cards.delete(id); }
   for (const c of list) {
-    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles]);
+    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
     const cur = cards.get(c.id);
     if (cur && cur.sig === sig) continue;
     const el = clipCard(c);

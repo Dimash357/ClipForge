@@ -118,7 +118,8 @@ def candidates(segments, duration, minlen=20, maxlen=55):
 
 def ollama_rank(items):
     # Optional local semantic reranker; falls back to transparent heuristics.
-    if os.getenv('USE_OLLAMA', '0') != '1':
+    from . import ai_provider
+    if os.getenv('USE_OLLAMA', '0') != '1' or ai_provider.paused():
         return items
     try:
         import requests
@@ -126,8 +127,8 @@ def ollama_rank(items):
         subset = items[:18]
         prompt = 'Score each numbered transcript excerpt for short-form video: hook, clarity, interestingness, self-contained story. Return ONLY JSON array of objects with id (integer) and score (0-100).\n' + '\n'.join(
             f'{i}: {x["text"][:900]}' for i, x in enumerate(subset))
-        r = requests.post('http://127.0.0.1:11434/api/generate', json={
-                          'model': model, 'prompt': prompt, 'stream': False, 'format': 'json'}, timeout=180)
+        r = requests.post(os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434').rstrip('/') + '/api/generate', json={
+                          'model': model, 'prompt': prompt, 'stream': False, 'format': 'json'}, timeout=(3.05, 120))
         r.raise_for_status()
         raw = json.loads(r.json()['response'])
         scores = raw if isinstance(raw, list) else raw.get('scores', [])
@@ -138,7 +139,9 @@ def ollama_rank(items):
                 subset[idx]['score'] = 0.4*subset[idx]['score'] + \
                     0.6*max(0, min(100, value))
         return sorted(items, key=lambda x: x['score'], reverse=True)
-    except Exception:
+    except Exception as exc:
+        if not isinstance(exc, (ValueError, KeyError, TypeError)):
+            ai_provider.trip(exc)
         return items
 
 
@@ -312,8 +315,8 @@ from .procutil import JobCancelled
 
 log = logging.getLogger('studio.pipeline')
 LEGACY_MODES = ('smart', 'center', 'gameplay', 'gameplay_facecam')
-NEEDS_ANALYSIS = ('director', 'smart', 'gameplay_facecam', 'reaction')
-CAM_MODES = ('director', 'gameplay_facecam', 'reaction')
+NEEDS_ANALYSIS = ('director', 'smart', 'gameplay_facecam', 'reaction', 'auto')
+CAM_MODES = ('director', 'gameplay_facecam', 'reaction', 'auto')
 
 
 def fingerprint(path):
@@ -557,6 +560,15 @@ def _source_analysis(p, source, duration, vinfo, fp, rep):
     else:
         analysis['cam'] = old.get('cam') if old.get('fingerprint') == fp else None
     analysis['cam_corner'] = p.facecam_corner
+    if old.get('source_meta') and old.get('fingerprint') == fp:
+        analysis['source_meta'] = old['source_meta']
+    elif p.youtube_url:
+        try:
+            from .youtube import get_metadata
+            m = get_metadata(p.youtube_url)
+            analysis['source_meta'] = {'title': m.get('title', '')[:300], 'author': m.get('author', '')[:120]}
+        except Exception as exc:
+            log.info('YouTube metadata unavailable: %s', exc)
     rep.frac(1.0)
     set_state(p.pk, analysis=analysis)
     return cache, wav, analysis
@@ -687,7 +699,7 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
     for i, c in enumerate(clips):
         rep.check()
         cfg = per[c.pk]
-        clip = {'start': c.start, 'end': c.end}
+        clip = {'start': c.start, 'end': c.end, 'scores': c.scores or {}}
         if cfg['mode'] in NEEDS_ANALYSIS:
             plans[c.pk] = editor.prepare(source, clip, cfg['mode'], cfg['corner'], cfg['opts'], vinfo, rep=rep,
                                          progress=lambda f, i=i: rep.frac((i + f) / n, f'Анализ сцен: клип {i + 1} из {n}'),
@@ -700,7 +712,10 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         rep.check()
         types = [s['type'] for s in plans[c.pk]['segments']]
         try:
+            keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
             c.meta = metadata.generate(c.text or clip_text(segments, c.start, c.end), scene_types=types)
+            if keep:
+                c.meta['short'] = keep
             if c.meta.get('titles'):
                 c.title = c.meta['titles'][0][:240]
         except Exception:
@@ -727,7 +742,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             except Exception as exc:
                 log.warning('new renderer failed for clip %s (%s); falling back to v4 renderer', c.pk, str(exc)[:300])
                 try:
-                    legacy_mode = cfg['mode'] if cfg['mode'] in LEGACY_MODES else 'gameplay'
+                    eff = plans[c.pk].get('mode') or cfg['mode']
+                    legacy_mode = eff if eff in LEGACY_MODES else 'gameplay'
                     render(source, clip, segments, dest, temp, legacy_mode, cfg['corner'])
                     info = {'fallback_renderer': 'v4', 'fallback_reason': str(exc)[:300], 'mode': legacy_mode,
                             'segments': [], 'captions': {'style': 'classic', 'enabled': True}}
@@ -778,11 +794,30 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                                                                     'label': 'Автопроверка', 'detail': 'не удалось выполнить'}]}
             c.save()
             rep.frac((i + 1) / max(1, len(ok_ids)))
+    _short_meta(p, ok_ids, rep)
     failed = [c for c in clips if c.status == 'error']
     if not ok_ids:
         raise RuntimeError('Ни один клип не удалось отрендерить: ' + (failed[0].error[-400:] if failed else ''))
     msg = 'Готово!' if not failed else f'Готово: {len(ok_ids)} из {n} клипов, у остальных ошибка рендера.'
     set_state(pk, status='done', progress=100, stage='', stage_progress=None, message=msg, error='')
+
+
+def _short_meta(p, ok_ids, rep):
+    """Shorts title + description for every freshly rendered clip. Reuses stored results when the clip's content did
+    not change; the AI provider is time-limited and falls back locally, so this step can never stall the job."""
+    from . import shorts_meta
+    ids = list(ok_ids)
+    if not ids:
+        return
+    rep.frac(0.0, 'Пишем названия и описания для Shorts...')
+    p.refresh_from_db()
+    for i, c in enumerate(Clip.objects.filter(pk__in=ids)):
+        rep.check()
+        short = shorts_meta.ensure_for_clip(p, c)
+        if short:
+            c.title = short['title'][:240]
+            c.save(update_fields=['meta', 'title', 'updated_at'])
+        rep.frac((i + 1) / len(ids), f'Названия и описания: {i + 1} из {len(ids)}')
 
 
 def process_project(pk):

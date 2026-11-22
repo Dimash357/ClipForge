@@ -1,4 +1,6 @@
 """Export presets and validated per-project options (every value is whitelisted)."""
+import re
+
 from .captions import STYLES
 
 STREAM_STYLE = 'stream'
@@ -14,6 +16,7 @@ QUALITY = {
     'small': {'label': 'Компактное', 'x264': ('veryfast', 26), 'nvenc': 28},
 }
 EDIT_MODES = [
+    ('auto', 'AI Auto (сам выбирает режим для каждого клипа)'),
     ('director', 'Auto Scene Director (сам выбирает по сценам)'),
     ('reaction', 'Reaction Priority (стримы: вебка сверху 40%, игра снизу 60%)'),
     ('smart', 'Smart Reframe (лицо / центр)'),
@@ -35,6 +38,8 @@ DEFAULTS = {
     'cam_fit': 'balanced', 'cam_fill': 'mirror', 'highlight_audio': True, 'highlight_motion': True,
     # v5.2: stream editor
     'loudness': 'stream', 'auto_length': False,
+    # v5.3: the streamer's name (optional, typed by the user) for Shorts titles
+    'streamer': '',
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
@@ -78,6 +83,8 @@ def resolve(*layers):
                     out[key] = max(1.0, min(1.5, float(val)))
                 except (TypeError, ValueError):
                     pass
+            elif key == 'streamer':
+                out[key] = re.sub(r'[^\w .\-]', '', str(val), flags=re.U).strip()[:40]
             elif key == 'caption_highlight':
                 out[key] = None if val in (None, '', 'auto') else _b(val)
     if out['bg_fill'] == 'focus':

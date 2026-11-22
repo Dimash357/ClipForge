@@ -191,4 +191,13 @@ def full_report():
         'disk_free_gb': round(free / 1024 ** 3, 1) if free is not None else None,
         'max_jobs': settings.MAX_CONCURRENT_JOBS,
         'ollama': os.getenv('USE_OLLAMA', '0') == '1',
+        'ai': _ai_status(),
     }
+
+
+def _ai_status():
+    try:
+        from . import ai_provider
+        return ai_provider.status()
+    except Exception as exc:
+        return {'kind': None, 'reason': str(exc)[:100]}

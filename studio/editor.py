@@ -4,7 +4,7 @@ import logging
 from pathlib import Path
 
 from . import captions as cap
-from . import diagnostics, exports, layouts
+from . import automode, diagnostics, exports, layouts
 from . import scenes as scn
 from .procutil import run_capture, run_ffmpeg
 
@@ -63,7 +63,7 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None, so
     info = {'mode': mode, 'analysis': 'skipped'}
     analysis = None
     notes = []
-    if mode in ('director', 'smart', 'gameplay_facecam', 'fullframe', 'reaction'):
+    if mode in ('director', 'smart', 'gameplay_facecam', 'fullframe', 'reaction', 'auto'):
         try:
             analysis = _analyze_cached(source, clip, w, h, corner, cancel, progress, mode != 'fullframe', cache)
             info['analysis'] = f'{len(analysis["samples"])} кадров' + (' (из кэша)' if analysis.get('cached') else '')
@@ -73,6 +73,19 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None, so
                 raise
             log.warning('scene analysis failed (%s); using safe fallback', exc)
             info['analysis'] = f'ошибка: {str(exc)[:120]}'
+    if mode == 'auto':
+        # AI Auto: the decision reuses the analysis above (no extra decoding), then the chosen mode is planned
+        crop_frac = layouts.crop_dims(w, h, *exports.dims(opts))[0] / w
+        try:
+            chosen, reason, details = automode.choose(analysis, w, h, clip.get('scores'), source_cam, crop_frac)
+        except Exception as exc:
+            log.warning('auto mode decision failed (%s); using Smart Reframe', exc)
+            chosen, reason, details = 'smart', 'не удалось принять решение — безопасный режим Smart Reframe', {}
+        info['auto'] = {'mode': chosen, 'label': automode.LABELS.get(chosen, chosen), 'reason': reason,
+                        'details': details}
+        notes.append(f'AI Auto → {automode.LABELS.get(chosen, chosen)}: {reason}.')
+        mode = chosen
+        info['mode'] = mode
     cam = (analysis or {}).get('cam')
     if not cam and source_cam and corner in ('auto', source_cam.get('corner')):
         cam = dict(source_cam)
@@ -162,7 +175,8 @@ def prepare(source, clip, mode, corner, opts, vinfo, rep=None, progress=None, so
         if sg['type'] in ('game_cam', 'reaction_cam') and not cam_known:
             sg['type'] = opts['director_fallback']
             sg['fallback'] = True
-    return {'segments': segs, 'cam': info.get('cam'), 'info': info, 'notes': notes}
+    return {'segments': segs, 'cam': info.get('cam'), 'info': info, 'notes': notes, 'mode': mode,
+            'auto': info.get('auto')}
 
 
 def _public_segments(segs):
@@ -205,7 +219,7 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
     encoder, enc_note = diagnostics.choose_encoder(opts['encoder'])
     info = {'encoder': encoder, 'encoder_note': enc_note, 'graph_chars': len(graph), 'size': f'{W}x{H}',
             'segments': _public_segments(segs), 'captions': cap_report, 'mode': mode, 'notes': plan.get('notes', []), 'fps': fps or 'source',
-            'transition': transition, 'loudness': loud_info, 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
+            'transition': transition, 'loudness': loud_info, 'auto': plan.get('auto'), 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
                                                                   for k, v in plan['cam'].items()}}
 
     def cmd_for(enc):

@@ -1,0 +1,35 @@
+# Known streamers: a name is used in a title ONLY if it appears in the video's own YouTube title/channel
+# (or is typed by the user in "Стример в видео"). One name per line; variants separated by "|". Edit freely.
+Kuplinov|Куплинов|Kuplinov Play
+Bratishkin|Братишкин|bratishkinoff
+Buster|Бустер
+Evelone|Эвелон|evelone192
+Exile|Экзайл
+Mellstroy|Меллстрой
+Paradeev|Парадеевич|Paradeevich
+Hellyeahplay|Хеллиеплей
+Jesusavgn|Джесус|JesusAVGN
+Shadowkek|Шадоукек
+Mokrivskyi|Мокривский
+Strogo|Строго
+Dmitry Lixxx|Лиxxx|Lixxx
+Zubarefff|Зубарев
+Glad Valakas|Глад Валакас
+xQc
+Kai Cenat
+IShowSpeed|Speed
+Pokimane
+Asmongold
+shroud
+Ninja
+TimTheTatman
+DrDisrespect
+Ludwig
+MoistCr1TiKaL|penguinz0
+summit1g
+Tyler1
+HasanAbi
+Sodapoppin
+forsen
+Mizkif
+Valkyrae

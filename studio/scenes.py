@@ -156,8 +156,9 @@ def motion_centroid(diff, thr=18):
     wts = diff[ys, xs].astype(np.float32)
     cx = float((xs * wts).sum() / wts.sum()) / w
     cy = float((ys * wts).sum() / wts.sum()) / h
+    sx = float(np.sqrt(((xs / w - cx) ** 2 * wts).sum() / wts.sum()))   # horizontal spread of the action
     # whole-screen change (camera pan, scene cut) has no single centre -> weak target
-    return {'cx': round(cx, 3), 'cy': round(cy, 3), 'share': round(share, 3)}
+    return {'cx': round(cx, 3), 'cy': round(cy, 3), 'share': round(share, 3), 'sx': round(sx, 3)}
 
 
 def analyze(source, start, end, src_w, src_h, corner_hint='auto', cancel=None, progress=None, detect_faces=True):

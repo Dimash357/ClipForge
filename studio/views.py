@@ -10,6 +10,7 @@ from django.core.files import File
 from django.db.models import Q
 from django.http import FileResponse, Http404, HttpResponse, JsonResponse, StreamingHttpResponse
 from django.shortcuts import get_object_or_404, redirect, render
+from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import captions, diagnostics, exports, jobs
@@ -25,7 +26,7 @@ LENGTHS = {'auto': (12, 60), 'short': (15, 32), 'standard': (20, 55), 'long': (4
 OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'caption_words', 'caption_animate', 'bg_fill',
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
-                 'highlight_audio', 'highlight_motion', 'loudness')
+                 'highlight_audio', 'highlight_motion', 'loudness', 'streamer')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
               'highlight_motion')
 
@@ -110,6 +111,7 @@ def index(request):
     return render(request, 'studio/index.html', _ctx_index())
 
 
+@ensure_csrf_cookie            # the page's buttons POST with the CSRF cookie; it must exist even when opened directly
 @require_GET
 def project(request, pk):
     p = get_object_or_404(Project, pk=pk)
@@ -136,6 +138,7 @@ def _clip_json(c, p):
         'encoder': info.get('encoder_note') or info.get('encoder'), 'fallback_renderer': info.get('fallback_renderer'),
         'opts': exports.resolve(p.options, info.get('opts')), 'position': c.position,
         'download': c.video.url + '?download=1' if c.video else None,
+        'auto': info.get('auto'), 'short': (c.meta or {}).get('short'),
     }
 
 
@@ -287,6 +290,24 @@ def rerender_clip(request, pk):
     return render_clips(request, clip.project_id)
 
 
+@require_POST
+def clip_short_meta(request, pk):
+    """Generate (or regenerate) the Shorts title + description of one rendered clip. Stored in Clip.meta."""
+    from . import shorts_meta
+    clip = get_object_or_404(Clip, pk=pk)
+    if jobs.is_active(clip.project_id):
+        return _busy(clip.project_id)
+    if clip.status != 'ready':
+        return JsonResponse({'error': 'Клип ещё не готов.'}, status=400)
+    data = _json_body(request)
+    short = shorts_meta.ensure_for_clip(clip.project, clip, force=bool(data.get('regenerate', True)))
+    if not short:
+        return JsonResponse({'error': 'Не удалось сгенерировать название — подробности в logs/clipforge.log.'}, status=500)
+    clip.title = short['title'][:240]
+    clip.save(update_fields=['meta', 'title', 'updated_at'])
+    return JsonResponse({'ok': True, 'short': short, 'title': clip.title})
+
+
 @require_GET
 def history(request):
     q = request.GET.get('q', '').strip()
@@ -310,6 +331,7 @@ def history(request):
         'statuses': ['done', 'review', 'processing', 'queued', 'fetching', 'error', 'cancelled', 'interrupted']})
 
 
+@ensure_csrf_cookie
 @require_GET
 def system(request):
     return render(request, 'studio/system.html', {'report': diagnostics.full_report()})

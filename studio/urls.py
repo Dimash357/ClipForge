@@ -11,6 +11,7 @@ urlpatterns = [
     path('api/projects/<int:pk>/resume/', views.resume, name='resume'),
     path('api/projects/<int:pk>/render/', views.render_clips, name='render_clips'),
     path('api/clips/<int:pk>/rerender/', views.rerender_clip, name='rerender_clip'),
+    path('api/clips/<int:pk>/short-meta/', views.clip_short_meta, name='clip_short_meta'),
     path('api/system/recheck/', views.system_recheck, name='system_recheck'),
     path('api/youtube/metadata/', views.metadata, name='metadata'),
     path('api/youtube/source-check/', views.source_check, name='source_check'),

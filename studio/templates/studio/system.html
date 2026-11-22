@@ -16,7 +16,8 @@
 <tr><td>Библиотеки</td><td>{% for k, v in report.libs.items %}{{ k }}: {% if v %}<span class="ok">{{ v }}</span>{% else %}<span class="bad">нет</span>{% endif %} · {% endfor %}</td></tr>
 <tr><td>Свободно на диске</td><td>{{ report.disk_free_gb }} ГБ</td></tr>
 <tr><td>Параллельных задач</td><td>{{ report.max_jobs }} <small>(CLIPFORGE_MAX_JOBS)</small></td></tr>
-<tr><td>Ollama (необязательно)</td><td>{% if report.ollama %}включён{% else %}выключен{% endif %}</td></tr></table>
+<tr><td>Ollama (необязательно)</td><td>{% if report.ollama %}включён{% else %}выключен{% endif %}</td></tr>
+<tr><td>AI для названий Shorts</td><td>{% if report.ai.kind %}{{ report.ai.kind }} · {{ report.ai.model }}{% if report.ai.paused_s %} — пауза {{ report.ai.paused_s }} с после ошибки: {{ report.ai.last_error }}{% endif %}{% else %}не настроен — названия пишет локальный генератор (без API){% endif %}</td></tr></table>
 <div class="actions"><button class="secondary" id="recheck">↻ Проверить заново</button></div></div>
 <div class="notice"><b>Как включить GPU для Whisper (если CUDA «нет»):</b> установите свежий драйвер NVIDIA и CUDA-библиотеки (cuBLAS 12 + cuDNN 9) — подробности в README, раздел «GPU». Принудительно выбрать устройство: <code>WHISPER_DEVICE=cpu</code> или <code>cuda</code>.</div>
 {% endblock %}

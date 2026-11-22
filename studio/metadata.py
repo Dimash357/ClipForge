@@ -67,7 +67,8 @@ def extractive(text, lang=None, scene_types=()):
 
 
 def _ollama(text, lang):
-    if os.getenv('USE_OLLAMA', '0') != '1':
+    from . import ai_provider
+    if os.getenv('USE_OLLAMA', '0') != '1' or ai_provider.paused():
         return None
     try:
         import requests
@@ -76,8 +77,9 @@ def _ollama(text, lang):
                   'Do not invent names, numbers or events. Return ONLY JSON: {"titles_ru":[3-5 strings],'
                   '"titles_en":[3-5 strings],"description_ru":"1-2 sentences","description_en":"1-2 sentences"}.\n'
                   'Transcript excerpt:\n' + text[:1500])
-        r = requests.post('http://127.0.0.1:11434/api/generate', json={'model': model, 'prompt': prompt, 'stream': False,
-                                                                        'format': 'json'}, timeout=120)
+        r = requests.post(os.getenv('OLLAMA_HOST', 'http://127.0.0.1:11434').rstrip('/') + '/api/generate',
+                          json={'model': model, 'prompt': prompt, 'stream': False, 'format': 'json'},
+                          timeout=(3.05, 90))
         r.raise_for_status()
         raw = json.loads(r.json()['response'])
 
@@ -94,6 +96,8 @@ def _ollama(text, lang):
                 'description_en': _trim(str(raw.get('description_en', '')), 220)}
     except Exception as exc:
         log.info('ollama metadata skipped: %s', exc)
+        if not isinstance(exc, (ValueError, KeyError)):
+            ai_provider.trip(exc)
         return None
 
 
