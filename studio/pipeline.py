@@ -42,6 +42,8 @@ _model_cache = {}
 
 
 def _get_model(name, device, compute):
+    from . import gpu_libs
+    gpu_libs.register()              # pip-installed CUDA 12 DLLs (install_gpu.bat) on Windows
     from faster_whisper import WhisperModel
     key = (name, device, compute)
     if key not in _model_cache:
@@ -79,6 +81,8 @@ def transcribe(path, lang, rep=None, duration=None):
                 except JobCancelled:
                     raise
                 except Exception as exc:          # OOM / old faster-whisper: the sequential path still works
+                    if CUDA_LIB_ERROR.search(str(exc)):
+                        raise                     # missing cuBLAS/cuDNN: the sequential path would fail too -> CPU
                     log.warning('batched Whisper failed on %s (%s); sequential decoding', dev, str(exc)[:200])
             if out is None:
                 hb.phase(f'Распознаём речь ({dev.upper()}); первые проценты появятся через минуту-две')
@@ -105,6 +109,10 @@ def transcribe(path, lang, rep=None, duration=None):
 
 
 transcribe.last_info = {}
+
+
+CUDA_LIB_ERROR = re.compile(r'(cublas|cudnn|cudart|nvrtc)\w*\.(dll|so)|is not found or cannot be loaded|'
+                            r'Could not (locate|load) (library )?\S*cu', re.I)
 
 
 def _whisper_cached(name):

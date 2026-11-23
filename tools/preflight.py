@@ -126,6 +126,32 @@ def check_js_runtime(which=shutil.which):
     return 0
 
 
+# ------------------------------------------------------------------ GPU for Whisper
+def check_gpu():
+    """Is an NVIDIA GPU usable by faster-whisper (CUDA 12 cuBLAS + cuDNN 9 loadable)? Never fatal."""
+    sys.path.insert(0, str(ROOT))
+    from studio import gpu_libs
+    code, out = _run(['nvidia-smi', '--query-gpu=name,driver_version', '--format=csv,noheader'], timeout=20)
+    if code != 0:
+        warn('Видеокарта NVIDIA не найдена (nvidia-smi) — Whisper работает на процессоре.')
+        return 0
+    ok('Видеокарта: ' + out.strip().splitlines()[0])
+    dirs = gpu_libs.register()
+    missing = gpu_libs.missing_dlls()
+    if missing:
+        warn('Нет библиотек CUDA 12 для Whisper: ' + ', '.join(missing) + '. Запустите install_gpu.bat — '
+             'без них распознавание идёт на процессоре (медленнее).')
+        return 0
+    ok('Библиотеки CUDA 12 (cuBLAS, cuDNN) загружаются' + (f' из {dirs[0].parent.parent}' if dirs else ''))
+    try:
+        import ctranslate2
+        n = ctranslate2.get_cuda_device_count()
+        (ok if n else warn)(f'CTranslate2 видит видеокарт: {n}')
+    except Exception as exc:
+        warn(f'CTranslate2: {str(exc)[:150]}')
+    return 0
+
+
 # ------------------------------------------------------------------ models
 def fetch_models():
     """Download the sound classifier once (16 MB, SHA-256 checked). Never fatal: without it the loudness
@@ -280,6 +306,8 @@ def main(argv):
         return check_js_runtime()
     if cmd == 'models':
         return fetch_models()
+    if cmd == 'gpu':
+        return check_gpu()
     if cmd == 'all':
         return check_venv() or check_ffmpeg() or check_deps() or check_js_runtime()
     print(__doc__)

@@ -3,6 +3,7 @@ import importlib
 import logging
 import os
 import shutil
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -77,8 +78,12 @@ def nvenc_works():
 
 _CUDA_SNIPPET = (
     "import json,sys\n"
+    "sys.path.insert(0, %r)\n"
     "out={'count':0,'types':[]}\n"
     "try:\n"
+    "    from studio import gpu_libs\n"
+    "    gpu_libs.register()\n"
+    "    out['missing']=gpu_libs.missing_dlls()\n"
     "    import ctranslate2 as c\n"
     "    out['count']=c.get_cuda_device_count()\n"
     "    if out['count']>0: out['types']=sorted(c.get_supported_compute_types('cuda'))\n"
@@ -92,7 +97,8 @@ def cuda_probe():
     """ctranslate2 CUDA check in a *child process* so a driver/library crash cannot kill the server."""
     def probe():
         try:
-            p = _run([sys.executable, '-c', _CUDA_SNIPPET], timeout=60)
+            root = str(Path(__file__).resolve().parent.parent)
+            p = _run([sys.executable, '-c', _CUDA_SNIPPET % root], timeout=60)
             import json
             return json.loads(p.stdout.strip().splitlines()[-1])
         except Exception as exc:
@@ -137,6 +143,10 @@ def whisper_settings():
     if _whisper_gpu_failed:
         return 'cpu', compute or 'int8', 'CPU (CUDA не заработала в этой сессии)'
     probe = cuda_probe()
+    if probe.get('count', 0) > 0 and probe.get('missing'):
+        # the GPU is there but CUDA 12 cuBLAS/cuDNN are not: go straight to CPU instead of failing minutes later
+        return 'cpu', compute or 'int8', ('CPU (видеокарта есть, но нет библиотек CUDA 12: ' +
+                                          ', '.join(probe['missing']) + ' — запустите install_gpu.bat)')
     if probe.get('count', 0) > 0:
         types = probe.get('types', [])
         ctype = compute or ('float16' if 'float16' in types else 'int8_float16' if 'int8_float16' in types else 'int8')

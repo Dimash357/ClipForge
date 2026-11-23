@@ -82,3 +82,71 @@ class ConsoleFilter(SimpleTestCase):
         self.assertTrue(f.filter(self._rec('"GET /api/projects/1/status/ HTTP/1.1" 500 120')))
         self.assertTrue(f.filter(self._rec('"POST /api/projects/1/render/ HTTP/1.1" 200 11')))
         self.assertTrue(f.filter(self._rec('"GET /projects/1/ HTTP/1.1" 200 5000')))
+
+
+class GpuLibraries(SimpleTestCase):
+    """Missing CUDA 12 DLLs: decided once, CPU straight away, no minutes lost on doomed GPU attempts."""
+
+    def setUp(self):
+        from studio import diagnostics
+        diagnostics._whisper_gpu_failed = False
+        self.addCleanup(setattr, diagnostics, '_whisper_gpu_failed', False)
+        pipeline._model_cache.clear()
+
+    def test_probe_with_missing_dlls_picks_cpu(self):
+        from studio import diagnostics
+        with mock.patch.object(diagnostics, 'cuda_probe', return_value={'count': 1, 'types': ['float16'],
+                                                                         'missing': ['cublas64_12.dll']}), \
+                mock.patch.dict('os.environ', {'WHISPER_DEVICE': 'auto'}):
+            dev, comp, note = diagnostics.whisper_settings()
+        self.assertEqual(dev, 'cpu')
+        self.assertIn('install_gpu.bat', note)
+
+    def test_library_error_in_batched_mode_goes_straight_to_cpu(self):
+        calls = []
+
+        class Model:
+            def __init__(self, dev):
+                self.dev = dev
+
+            def transcribe(self, *a, **k):
+                calls.append(('seq', self.dev))
+                return iter([Seg(0, 1, 'раз')]), mock.Mock(language='ru')
+
+        class Batched:
+            def __init__(self, model):
+                self.dev = model.dev
+
+            def transcribe(self, *a, **k):
+                calls.append(('batched', self.dev))
+                raise RuntimeError('Library cublas64_12.dll is not found or cannot be loaded')
+        import faster_whisper
+        from studio import diagnostics
+        with mock.patch.object(diagnostics, 'whisper_settings', side_effect=lambda: ('cpu', 'int8', 'x')
+                               if diagnostics._whisper_gpu_failed else ('cuda', 'float16', 'x')), \
+                mock.patch.object(pipeline, '_get_model', side_effect=lambda n, d, c: Model(d)), \
+                mock.patch.object(pipeline, '_whisper_cached', return_value=True), \
+                mock.patch.object(faster_whisper, 'BatchedInferencePipeline', Batched):
+            out = pipeline.transcribe('a.wav', 'auto')
+        self.assertEqual(calls, [('batched', 'cuda'), ('seq', 'cpu')], 'no sequential retry on the broken GPU')
+        self.assertEqual(out[0]['text'], 'раз')
+        self.assertTrue(diagnostics._whisper_gpu_failed)
+
+    def test_dll_folders_found_in_site_packages(self):
+        import tempfile
+        from pathlib import Path
+        from studio import gpu_libs
+        root = Path(tempfile.mkdtemp())
+        for pkg in ('cublas', 'cudnn'):
+            (root / 'nvidia' / pkg / 'bin').mkdir(parents=True)
+            (root / 'nvidia' / pkg / 'bin' / f'{pkg}64.dll').write_bytes(b'x')
+        (root / 'nvidia' / 'empty' / 'bin').mkdir(parents=True)
+        with mock.patch('sysconfig.get_paths', return_value={'purelib': str(root), 'platlib': str(root)}), \
+                mock.patch('site.getsitepackages', return_value=[]):
+            dirs = gpu_libs.nvidia_dirs()
+        self.assertEqual(sorted(d.parent.name for d in dirs), ['cublas', 'cudnn'])
+
+    def test_non_windows_is_a_no_op(self):
+        from studio import gpu_libs
+        with mock.patch.object(gpu_libs.os, 'name', 'posix'):
+            self.assertEqual(gpu_libs.missing_dlls(), [])

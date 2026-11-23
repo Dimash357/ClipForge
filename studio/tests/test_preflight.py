@@ -111,7 +111,7 @@ class DatabaseBackup(SimpleTestCase):
 
 
 class BatchScripts(SimpleTestCase):
-    NAMES = ('setup.bat', 'start.bat', 'run_tests.bat', 'diagnose.bat')
+    NAMES = ('setup.bat', 'start.bat', 'run_tests.bat', 'diagnose.bat', 'install_gpu.bat')
 
     def test_ascii_crlf(self):
         for n in self.NAMES:
