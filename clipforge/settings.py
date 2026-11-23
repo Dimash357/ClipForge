@@ -41,5 +41,11 @@ LOGGING = {
         'file': {'class': 'logging.handlers.RotatingFileHandler', 'filename': str(LOG_DIR / 'clipforge.log'),
                  'maxBytes': 2_000_000, 'backupCount': 3, 'encoding': 'utf-8', 'formatter': 'std'},
     },
-    'loggers': {'studio': {'handlers': ['console', 'file'], 'level': os.getenv('CLIPFORGE_LOG_LEVEL', 'INFO')}},
+    'filters': {'quiet_polling': {'()': 'clipforge.logfilters.QuietPolling'}},
+    'loggers': {'studio': {'handlers': ['console', 'file'], 'level': os.getenv('CLIPFORGE_LOG_LEVEL', 'INFO')},
+                # runserver request lines without the status polling every 1-2 s (it hid ClipForge's own messages)
+                'django.server': {'handlers': ['server_console'], 'level': 'INFO', 'propagate': False}},
 }
+LOGGING['formatters']['server'] = {'format': '[%(asctime)s] %(message)s', 'datefmt': '%d/%b/%Y %H:%M:%S'}
+LOGGING['handlers']['server_console'] = {'class': 'logging.StreamHandler', 'filters': ['quiet_polling'],
+                                         'formatter': 'server'}

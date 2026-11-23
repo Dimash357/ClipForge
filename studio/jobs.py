@@ -92,6 +92,10 @@ class Reporter:
         self._first_frac = True
         self._write(key, message, status, force=True)
 
+    def note(self, message):
+        """Update only the message (stage progress stays as it is, e.g. unknown)."""
+        self._write(self.current, message, None)
+
     def frac(self, value, message=None):
         """Report a *real* fraction of the current stage (0..1)."""
         self._stage_frac = max(0.0, min(1.0, float(value)))

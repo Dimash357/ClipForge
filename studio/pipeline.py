@@ -59,35 +59,113 @@ def transcribe(path, lang, rep=None, duration=None):
     device, compute, note = diagnostics.whisper_settings()
     attempts = [(device, compute)] + ([('cpu', 'int8')] if device == 'cuda' else [])
     for dev, comp in attempts:
+        hb = _Heartbeat(rep)
         try:
+            if not _whisper_cached(model_name):
+                hb.phase(f'Скачиваем модель Whisper «{model_name}» (один раз, ~0.5 ГБ; прогресс в окне сервера)')
+            else:
+                hb.phase(f'Загружаем модель Whisper «{model_name}» ({dev.upper()})')
+            t0 = time.monotonic()
             model = _get_model(model_name, dev, comp)
+            log.info('Whisper %s loaded on %s/%s in %.1f s', model_name, dev, comp, time.monotonic() - t0)
             batch = whisper_batch_size(dev)
             out, info, used = None, None, 0
             if batch:
                 try:
-                    out, info = _run_whisper(model, path, lang, rep, duration, dev, batch)
+                    hb.phase(f'Ищем речь во всём файле и распознаём пакетами по {batch} ({dev.upper()}); '
+                             'первые проценты появятся после первого пакета')
+                    out, info = _run_whisper(model, path, lang, rep, duration, dev, batch, hb)
                     used = batch
                 except JobCancelled:
                     raise
                 except Exception as exc:          # OOM / old faster-whisper: the sequential path still works
                     log.warning('batched Whisper failed on %s (%s); sequential decoding', dev, str(exc)[:200])
             if out is None:
-                out, info = _run_whisper(model, path, lang, rep, duration, dev, 0)
+                hb.phase(f'Распознаём речь ({dev.upper()}); первые проценты появятся через минуту-две')
+                out, info = _run_whisper(model, path, lang, rep, duration, dev, 0, hb)
+            took = time.monotonic() - t0
+            log.info('Whisper done: %d segments, %.0f s of audio in %.0f s (%.1fx realtime, %s, batch %s)', len(out),
+                     duration or 0, took, (duration or 0) / max(took, 1), dev, used)
             transcribe.last_info = {'model': model_name, 'device': dev, 'compute': comp, 'batch': used,
-                                    'detected_language': getattr(info, 'language', None), 'requested_lang': lang}
+                                    'detected_language': getattr(info, 'language', None), 'requested_lang': lang,
+                                    'seconds': round(took)}
             return out
         except JobCancelled:
             raise
         except Exception as exc:
+            log.warning('Whisper failed on %s: %s', dev, str(exc)[:300])
             if dev == 'cuda':
                 diagnostics.mark_whisper_gpu_failed(str(exc)[:200])
                 _model_cache.clear()
                 continue
             raise
+        finally:
+            hb.stop()
     return []
 
 
 transcribe.last_info = {}
+
+
+def _whisper_cached(name):
+    """Is the faster-whisper model already in the Hugging Face cache? (unknown -> True: no scary message)"""
+    try:
+        from faster_whisper.utils import _MODELS
+        from huggingface_hub import try_to_load_from_cache
+        repo = _MODELS.get(name)
+        if not repo:
+            return True
+        return isinstance(try_to_load_from_cache(repo, 'model.bin'), str)
+    except Exception:
+        return True
+
+
+class _Heartbeat:
+    """Until Whisper yields its first segment the stage has no measurable progress: keep telling the user what is
+    happening and for how long, so a long model download / VAD pass never looks like a hang."""
+
+    def __init__(self, rep, every=5.0):
+        import threading
+        self.rep, self.every = rep, every
+        self.started = time.monotonic()
+        self.text = ''
+        self.done = threading.Event()
+        self.thread = None
+        if rep is not None:
+            self.thread = threading.Thread(target=self._loop, name='clipforge-whisper-heartbeat', daemon=True)
+            self.thread.start()
+
+    def phase(self, text):
+        self.text = text
+        log.info('Whisper: %s', text)
+        self._say()
+
+    def first_segment(self):
+        if not self.done.is_set():
+            log.info('Whisper: first segment after %.0f s', time.monotonic() - self.started)
+        self.done.set()
+
+    def _say(self):
+        if self.rep is None or self.done.is_set() or not self.text:
+            return
+        el = int(time.monotonic() - self.started)
+        try:
+            self.rep.note(f'{self.text}… прошло {el // 60}:{el % 60:02d}')
+        except Exception:
+            pass
+
+    def _loop(self):
+        from django.db import connection
+        try:
+            while not self.done.wait(self.every):
+                self._say()
+        finally:
+            connection.close()
+
+    def stop(self):
+        self.done.set()
+        if self.thread is not None:
+            self.thread.join(timeout=2)
 
 
 def whisper_batch_size(device):
@@ -101,7 +179,7 @@ def whisper_batch_size(device):
         return 0
 
 
-def _run_whisper(model, path, lang, rep, duration, dev, batch):
+def _run_whisper(model, path, lang, rep, duration, dev, batch, hb=None):
     """One decoding pass. batch > 0: faster-whisper's BatchedInferencePipeline (VAD-cut chunks decoded in
     parallel: 2-4x faster on a GPU); 0: the classic sequential decoder."""
     kw = dict(language=None if lang == 'auto' else lang, beam_size=5, word_timestamps=True, vad_filter=True)
@@ -113,6 +191,8 @@ def _run_whisper(model, path, lang, rep, duration, dev, batch):
     out = []
     label = dev.upper() + (f', пакеты по {batch}' if batch else '')
     for s in segments:
+        if hb is not None:
+            hb.first_segment()
         if rep:
             rep.check()
             if duration:
