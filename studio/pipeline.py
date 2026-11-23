@@ -762,6 +762,7 @@ def _run_full(pk, rep, payload):
     _preflight()
     source = _ensure_source(p, rep)
     p.refresh_from_db()
+    rep.checkpoint('source', name=p.source.name)
     rep.stage('audio', 'Анализируем видео и аудио...')
     duration = probe(source)
     vinfo = editor.probe_video(source)
@@ -771,6 +772,12 @@ def _run_full(pk, rep, payload):
     cache, wav, analysis = _source_analysis(p, source, duration, vinfo, fp, rep)
     segments = _get_transcript(p, source, duration, fp, rep, wav=wav)
     p.refresh_from_db()
+    rep.checkpoint('transcript', segments=len(segments or []))
+    resumed = _resumed_clips(p, rep)
+    if resumed:                       # this job already chose and created its clips before it was interrupted
+        rep.skip('highlights')
+        _render_clips(p, resumed, opts, rep, segments, source, vinfo, mode=None, corner=None)
+        return
     analysis['language'] = (p.transcript_meta or {}).get('detected_language') or p.language
     rep.stage('highlights', 'Ищем интересные моменты...', frac=None)
     selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep, cache=cache, wav=wav)
@@ -791,11 +798,21 @@ def _run_full(pk, rep, payload):
             reason=c.get('reason', ''), scores=dict(c.get('scores') or {}, engine=c.get('engine'),
                                                    auto_bounds=c.get('auto_bounds') or [c['start'], c['end']]),
             title=f'Highlight {i + 1}', status='candidate' if review else 'queued'))
+    rep.checkpoint('clips', ids=[c.pk for c in clips], review=bool(review))
     if review:
         set_state(pk, status='review', stage='', stage_progress=None,
                   message='Фрагменты найдены. Просмотрите, при необходимости поправьте границы и запустите рендер.')
         return
     _render_clips(p, clips, opts, rep, segments, source, vinfo, mode=None, corner=None)
+
+
+def _resumed_clips(p, rep):
+    """Clips this job created before an interruption (checkpoint 'clips'), if they all still exist."""
+    cp = rep.get('clips')
+    if not cp or cp.get('review'):
+        return None
+    clips = list(Clip.objects.filter(project=p, pk__in=cp.get('ids') or []).order_by('position'))
+    return clips if clips and len(clips) == len(cp['ids']) else None
 
 
 def _run_render(pk, rep, payload):
@@ -852,6 +869,8 @@ def _clip_opts(p, clip):
 
 def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corner):
     n = len(clips)
+    rendered = set((rep.get('rendered') or {}).get('ids', []))       # finished before an interruption: keep them
+    kept = {c.pk for c in clips if c.pk in rendered and c.video and c.status == 'ready'}
     pk = p.pk
     per = {}
     for c in clips:
@@ -870,6 +889,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         rep.skip('scenes')
     for i, c in enumerate(clips):
         rep.check()
+        if c.pk in kept:
+            continue
         cfg = per[c.pk]
         clip = {'start': c.start, 'end': c.end, 'scores': c.scores or {}}
         if cfg['mode'] in NEEDS_ANALYSIS:
@@ -882,6 +903,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
     rep.stage('edit', 'Планируем монтаж, субтитры и названия...', frac=0.0)
     for i, c in enumerate(clips):
         rep.check()
+        if c.pk in kept:
+            continue
         types = [s['type'] for s in plans[c.pk]['segments']]
         try:
             keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
@@ -899,6 +922,9 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
     with tempfile.TemporaryDirectory(prefix='clipforge_') as td:
         for i, c in enumerate(clips):
             rep.check()
+            if c.pk in kept:
+                ok_ids.append(c.pk)
+                continue
             cfg = per[c.pk]
             c.status = 'rendering'
             c.save(update_fields=['status', 'updated_at'])
@@ -948,6 +974,7 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                         pass
             ok_ids.append(c.pk)
             rep.frac((i + 1) / n)
+            rep.checkpoint_add('rendered', c.pk)          # safe point: a pause here loses no rendered clip
         rep.stage('validate', 'Проверяем результат...', frac=0.0)
         for i, c in enumerate(Clip.objects.filter(pk__in=ok_ids)):
             rep.check()

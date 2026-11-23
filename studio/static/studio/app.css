@@ -44,7 +44,7 @@ details{border:1px solid var(--line);border-radius:12px;padding:4px 14px;margin-
 .hrow{display:flex;gap:12px;align-items:center;padding:11px 14px;border:1px solid var(--line);border-radius:12px;background:var(--card);margin-bottom:8px}
 .hrow:hover{border-color:#3a4260}.hrow .t{flex:1;min-width:0}.hrow .t div{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-weight:600}
 .badge{font-size:11px;font-weight:800;letter-spacing:.05em;padding:3px 9px;border-radius:99px;background:#222a40;color:var(--mut);white-space:nowrap}
-.b-done{background:#10382a;color:var(--ok)}.b-error,.b-interrupted{background:#3a1822;color:var(--bad)}.b-cancelled{background:#33291a;color:var(--warn)}
+.b-done{background:#10382a;color:var(--ok)}.b-error,.b-interrupted{background:#3a1822;color:var(--bad)}.b-cancelled,.b-paused{background:#33291a;color:var(--warn)}.b-completed{background:#10382a;color:var(--ok)}.b-failed{background:#3a1822;color:var(--bad)}.b-running{background:#1d2a52;color:#9db4ff}
 .b-processing,.b-fetching,.b-queued{background:#1d2850;color:#9fb4ff}.b-review{background:#2c2250;color:#c3b0ff}
 .filters{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:16px}.filters>*{width:auto;min-width:140px}.filters input[type=text]{flex:1;min-width:200px}
 /* stepper */

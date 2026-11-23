@@ -14,7 +14,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import captions, diagnostics, exports, jobs
-from .models import Clip, Project
+from .models import Clip, Job, Project
 from .pipeline import process_project  # noqa: F401  (kept importable for v4 compatibility)
 from .source_library import find_source
 from .youtube import get_metadata, parse_youtube_url
@@ -206,12 +206,25 @@ def cancel(request, pk):
 
 
 @require_POST
+def pause(request, pk):
+    get_object_or_404(Project, pk=pk)
+    job = jobs.live_job(pk)
+    return JsonResponse({'ok': bool(job and jobs.pause_job(job.pk))})
+
+
+@require_POST
 def resume(request, pk):
     """Re-run a stopped/failed/interrupted project reusing the downloaded source and transcript."""
     p = get_object_or_404(Project, pk=pk)
-    if p.status not in ('error', 'cancelled', 'interrupted', 'review', 'done'):
+    if p.status not in ('error', 'cancelled', 'interrupted', 'review', 'done', 'paused'):
         return _busy(pk)
     data = _json_body(request)
+    if not data and p.status in ('paused', 'interrupted', 'error', 'cancelled'):
+        # continue the project's last unfinished job from its checkpoints (finished steps are skipped)
+        last = p.jobs.order_by('-created_at').first()
+        if last and last.status in (Job.PAUSED, Job.INTERRUPTED, Job.FAILED, Job.CANCELLED) and last.checkpoints \
+                and jobs.resume_job(last.pk):
+            return JsonResponse({'ok': True, 'job': last.pk})
     changed = False
     if data.get('edit_mode') in exports.MODE_KEYS:
         p.edit_mode = data['edit_mode']
@@ -416,3 +429,59 @@ def serve_media(request, path):
     if request.GET.get('download'):
         resp['Content-Disposition'] = f'attachment; filename="{full.name}"'
     return resp
+
+
+# ---------------------------------------------------------------- job queue page
+def _job_json(j, now):
+    elapsed = j.run_seconds + ((now - j.started_at).total_seconds() if j.status == Job.RUNNING and j.started_at else 0)
+    try:
+        label = jobs.handler(j.kind).label
+    except ValueError:
+        label = j.kind
+    return {'id': j.pk, 'kind': j.kind, 'label': label, 'title': j.title, 'project': j.project_id,
+            'status': j.status, 'status_label': dict(Job.STATUSES).get(j.status, j.status), 'priority': j.priority,
+            'stage': j.stage, 'stage_label': dict((k, l) for k, l, _ in jobs.STAGES).get(j.stage, j.stage),
+            'stage_progress': j.stage_progress, 'progress': j.progress, 'message': j.message, 'error': j.error[-600:],
+            'attempts': j.attempts, 'max_attempts': j.max_attempts, 'checkpoints': sorted(j.checkpoints or {}),
+            'pause_requested': j.pause_requested, 'cancel_requested': j.cancel_requested,
+            'created_at': j.created_at.isoformat(), 'finished_at': j.finished_at and j.finished_at.isoformat(),
+            'elapsed': round(elapsed, 1)}
+
+
+@ensure_csrf_cookie
+def queue(request):
+    jobs.recover_once()
+    return render(request, 'studio/queue.html', {'max_jobs': jobs.max_heavy()})
+
+
+@require_GET
+def jobs_list(request):
+    from django.utils import timezone
+    now = timezone.now()
+    live = list(Job.objects.filter(status__in=Job.LIVE).order_by('-priority', 'created_at'))
+    done = list(Job.objects.exclude(status__in=Job.LIVE).order_by('-updated_at')[:50])
+    return JsonResponse({'live': [_job_json(j, now) for j in live], 'recent': [_job_json(j, now) for j in done],
+                         'max_jobs': jobs.max_heavy()})
+
+
+@require_POST
+def job_action(request, pk, action):
+    job = get_object_or_404(Job, pk=pk)
+    if action == 'pause':
+        ok = jobs.pause_job(job.pk)
+    elif action == 'resume':
+        ok = jobs.resume_job(job.pk)
+    elif action == 'cancel':
+        ok = jobs.cancel_job(job.pk)
+    elif action == 'retry':
+        ok = jobs.retry_job(job.pk) is not None
+    elif action == 'priority':
+        try:
+            ok = jobs.set_priority(job.pk, int(_json_body(request).get('priority')))
+        except (TypeError, ValueError):
+            return JsonResponse({'error': 'priority must be an integer'}, status=400)
+    else:
+        raise Http404
+    if not ok:
+        return JsonResponse({'ok': False, 'error': 'Действие сейчас недоступно для этой задачи.'}, status=409)
+    return JsonResponse({'ok': True})

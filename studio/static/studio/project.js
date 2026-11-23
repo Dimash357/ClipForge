@@ -14,7 +14,7 @@ function h(tag, attrs, ...kids) {
 }
 const TYPES = {reaction_cam: 'Вебка + игра', action: 'Игра (за действием)', fullframe: 'Весь кадр', gameplay: 'Игра', game_cam: 'Игра + камера', talking: 'Автор', screen: 'Экран', smart: 'Smart', center: 'Центр'};
 const MODES = {auto: 'AI Auto', reaction: 'Reaction Priority', fullframe: 'Без обрезки', director: 'Auto Scene Director', smart: 'Smart Reframe', gameplay_facecam: 'Gameplay Priority', gameplay: 'Gameplay', center: 'Центр'};
-const STATUS = {done: 'Готово', error: 'Ошибка', cancelled: 'Остановлено', interrupted: 'Прервано', review: 'Ждёт подтверждения', processing: 'В работе', fetching: 'Загрузка', queued: 'В очереди'};
+const STATUS = {done: 'Готово', error: 'Ошибка', cancelled: 'Остановлено', interrupted: 'Прервано', paused: 'Пауза', review: 'Ждёт подтверждения', processing: 'В работе', fetching: 'Загрузка', queued: 'В очереди'};
 let data = null, timer = null;
 const cards = new Map(), cand = new Map();
 
@@ -42,8 +42,9 @@ function render(d) {
   const err = $('error'); err.style.display = d.error ? 'block' : 'none'; err.textContent = d.error || '';
   const actions = $('actions'); actions.replaceChildren();
   if (act) actions.append(h('button', {class: 'danger', text: d.cancel_requested ? 'Останавливаем…' : '■ Остановить', disabled: d.cancel_requested, onclick: cancel}));
+  if (act) actions.append(h('button', {text: '⏸ Пауза', title: 'Остановится после текущего шага, готовые шаги сохранятся', onclick: async () => { await post(`/api/projects/${PID}/pause/`); poll(); }}));
   else {
-    if (['error', 'cancelled', 'interrupted'].includes(d.status)) actions.append(h('button', {class: 'primary', text: '↻ Продолжить (без повторной загрузки и транскрибации)', onclick: () => resume({})}));
+    if (['error', 'cancelled', 'interrupted', 'paused'].includes(d.status)) actions.append(h('button', {class: 'primary', text: '↻ Продолжить (без повторной загрузки и транскрибации)', onclick: () => resume({})}));
     if (d.status === 'done') actions.append(h('button', {text: '↻ Подобрать моменты заново', onclick: () => resume({reprocess: true, skip_review: true})}));
     if (d.transcript_meta && d.transcript_meta.device && !act) actions.append(h('span', {class: 'hint', text: `Whisper: ${d.transcript_meta.model} · ${String(d.transcript_meta.device).toUpperCase()}`}));
     const a = d.analysis;

@@ -26,6 +26,10 @@ SOURCE_LIBRARY_ROOT=BASE_DIR / "source_library"
 # --- ClipForge v5 ---
 # Heavy jobs (whisper / ffmpeg) run through one in-process queue. 1 is right for an 8 GB GPU.
 MAX_CONCURRENT_JOBS = max(1, int(os.getenv('CLIPFORGE_MAX_JOBS', '1')))
+# persistent job queue (studio/jobs.py)
+JOB_STALE_SECONDS = int(os.getenv('CLIPFORGE_JOB_STALE_SECONDS', '30'))       # no heartbeat this long -> interrupted
+JOB_MAX_ATTEMPTS = int(os.getenv('CLIPFORGE_JOB_MAX_ATTEMPTS', '3'))          # automatic restarts after crashes
+JOB_AUTO_RESUME = os.getenv('CLIPFORGE_JOB_AUTO_RESUME', '1') == '1'
 # Tests never download models (they use a model that is already there, or the heuristic fallback)
 import sys as _sys
 SOUND_MODEL_DOWNLOAD = not (len(_sys.argv) > 1 and _sys.argv[1] == 'test') and os.getenv('CLIPFORGE_SOUND_DOWNLOAD', '1') == '1'
