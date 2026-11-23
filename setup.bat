@@ -29,6 +29,8 @@ rem ---- only the env's own python is used below: nothing is ever installed into
 echo Installing requirements into the environment...
 "%ENVPY%" -m pip install --disable-pip-version-check -r requirements.txt -c "%ENVDIR%\clipforge-constraints.txt"
 if errorlevel 1 goto pip_failed
+rem YouTube changes often: keep yt-dlp current (only yt-dlp and its helper packages, the NumPy pin stays)
+"%ENVPY%" -m pip install --disable-pip-version-check --upgrade "yt-dlp[default]" -c "%ENVDIR%\clipforge-constraints.txt"
 "%ENVPY%" tools\preflight.py deps --pip-check || goto failed
 "%ENVPY%" tools\preflight.py models
 "%ENVPY%" tools\preflight.py backup-db || goto failed

@@ -1,5 +1,6 @@
 """Source videos: never accept a file without a video stream; long streams fit the size limit."""
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from unittest import mock, skipUnless
@@ -135,3 +136,93 @@ class BrokenSourceRecovery(TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 yd.fetch_source(p.pk)
         self.assertIn('download attempted', str(cm.exception))
+
+
+class Forbidden403(SimpleTestCase):
+    """YouTube 403 on the direct streams: other strategies are tried; other errors stop at once."""
+
+    def _fmt(self, fid, vcodec='none', acodec='none', height=None, ext='mp4', protocol='https'):
+        return {'format_id': fid, 'vcodec': vcodec, 'acodec': acodec, 'height': height, 'ext': ext, 'protocol': protocol,
+                'url': 'https://x/' + fid, 'tbr': (height or 1) * 10, 'video_ext': ext if vcodec != 'none' else 'none',
+                'audio_ext': ext if acodec != 'none' else 'none'}
+
+    def _pick(self, fmt, formats):
+        import yt_dlp
+        sel = yt_dlp.YoutubeDL({'quiet': True}).build_format_selector(fmt)
+        return [f['format_id'] for f in sel({'formats': formats, 'incomplete_formats': False, 'has_merged_format': False})]
+
+    def formats(self):
+        # like the failing log: DASH 399 (AV1 1080p) + 251 audio over https, plus muxed HLS streams
+        return [self._fmt('251', acodec='opus', ext='webm'), self._fmt('399', vcodec='av01', height=1080),
+                self._fmt('137', vcodec='avc1', height=1080), self._fmt('136', vcodec='avc1', height=720),
+                self._fmt('140', acodec='mp4a', ext='m4a'),
+                self._fmt('95', vcodec='avc1', acodec='mp4a', height=720, protocol='m3u8_native'),
+                self._fmt('96', vcodec='avc1', acodec='mp4a', height=1080, protocol='m3u8_native')]
+
+    def test_strategy_formats(self):
+        names = [n for n, _ in yd.STRATEGIES]
+        self.assertEqual(len(names), 3)
+        fmts = self.formats()
+        first = self._pick(yd.STRATEGIES[0][1], fmts)[0]          # real ranking (in the log): 399+251
+        self.assertTrue(first and not first.startswith(('251', '140')), first)
+        self.assertEqual(self._pick(yd.STRATEGIES[1][1], fmts), ['96'])          # HLS: muxed 1080p stream
+        heights = {f['format_id']: f['height'] for f in fmts}
+        low = self._pick(yd.STRATEGIES[2][1], fmts)[0].split('+')[0]
+        self.assertTrue(heights[low] and heights[low] <= 720, low)
+        audio_only = [self._fmt('251', acodec='opus', ext='webm'), self._fmt('233', acodec='mp4a', protocol='m3u8_native')]
+        for _, fmt in yd.STRATEGIES:
+            self.assertEqual(self._pick(fmt, audio_only), [], 'never audio only')
+
+    def _run(self, outcomes):
+        calls = []
+
+        def once(pk, video_id, destination, rep, fmt, combined, title):
+            calls.append(fmt)
+            (destination / f'{video_id}.f399.mp4.part').write_bytes(b'x')
+            r = outcomes[len(calls) - 1]
+            if r is not None:
+                raise r
+        td = Path(tempfile.mkdtemp())
+        rep = mock.Mock()
+        with override_settings(BASE_DIR=Path(tempfile.mkdtemp())), mock.patch.object(yd, '_download_once', side_effect=once):
+            try:
+                return yd._download(7, 'UTG-tTZ8-1o', td, rep), calls, rep, td
+            except RuntimeError as exc:
+                return exc, calls, rep, td
+
+    def test_403_then_hls_works(self):
+        res, calls, rep, td = self._run([yd.Forbidden('403'), None])
+        self.assertEqual(res, 'поток HLS')
+        self.assertEqual(calls, [yd.STRATEGIES[0][1], yd.STRATEGIES[1][1]])
+        self.assertTrue(any('403' in str(c) and 'попытка 2' in str(c) for c in rep.frac.call_args_list))
+
+    def test_partial_pieces_are_cleared_between_attempts(self):
+        td = Path(tempfile.mkdtemp())
+        (td / 'a.part').write_bytes(b'x')
+        (td / 'yt_dlp.log').write_text('log')
+        yd._clean_partial(td)
+        self.assertEqual(sorted(f.name for f in td.iterdir()), ['yt_dlp.log'])
+
+    def test_other_errors_stop_immediately(self):
+        res, calls, _, _ = self._run([RuntimeError('Video unavailable'), None])
+        self.assertIn('Video unavailable', str(res))
+        self.assertEqual(len(calls), 1)
+
+    def test_all_forbidden_gives_actionable_message(self):
+        res, calls, _, _ = self._run([yd.Forbidden('403')] * 3)
+        self.assertEqual(len(calls), 3)
+        msg = str(res)
+        for part in ('403', 'setup.bat', 'source_library', 'UTG-tTZ8-1o.mp4', 'logs\\ytdlp-7.log'):
+            self.assertIn(part, msg)
+
+    def test_403_is_recognised_in_real_ytdlp_output(self):
+        td = Path(tempfile.mkdtemp())
+        fake = [sys.executable, '-c', "print('[download] Sleeping 4.00 seconds as required by the site...');"
+                                      "print('ERROR: unable to download video data: HTTP Error 403: Forbidden');"
+                                      "raise SystemExit(1)"]
+        real_popen = subprocess.Popen
+        with mock.patch.object(yd.subprocess, 'Popen', side_effect=lambda cmd, **k: real_popen(fake, **k)), \
+                mock.patch.object(yd, 'POLL_SECONDS', 0.05):
+            with self.assertRaises(yd.Forbidden):
+                yd._download_once(1, 'UTG-tTZ8-1o', td, None, yd.FORMAT, td / 'yt_dlp_all.log', 'попытка 1')
+        self.assertIn('HTTP Error 403', (td / 'yt_dlp_all.log').read_text(encoding='utf-8'))

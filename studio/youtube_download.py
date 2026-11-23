@@ -21,6 +21,20 @@ MAX_BYTES = getattr(settings, 'MAX_SOURCE_BYTES', 8 * 1024 ** 3)
 DOWNLOAD_TIMEOUT = int(float(os.getenv('CLIPFORGE_DOWNLOAD_MINUTES', '120')) * 60)   # long streams are big
 # never accept a format without video: every fallback requires a video codec
 FORMAT = 'bv*[height<=1080]+ba/b[height<=1080][vcodec!=none]/bv*+ba/b[vcodec!=none]'
+# YouTube sometimes answers 403 Forbidden for the direct (https/DASH) streams of a video - more often for long
+# ones. Its HLS (m3u8) streams are fetched in small fragments and usually still work; a lower resolution is the
+# last resort. (name shown to the user, format selector)
+STRATEGIES = [
+    ('обычная загрузка', FORMAT),
+    ('поток HLS', 'b[protocol^=m3u8][height<=1080][vcodec!=none]/bv*[protocol^=m3u8][height<=1080]+ba[protocol^=m3u8]'
+                  '/b[protocol^=m3u8][vcodec!=none]'),
+    ('720p', 'bv*[height<=720]+ba/b[height<=720][vcodec!=none]'),
+]
+FORBIDDEN_RX = re.compile(r'HTTP Error 403|403: Forbidden|Forbidden', re.I)
+
+
+class Forbidden(RuntimeError):
+    """yt-dlp got 403 Forbidden for the chosen stream - another strategy may still work."""
 STALL_TIMEOUT = 300  # No output for five minutes (merging a long stream is silent)
 POLL_SECONDS = 1
 PROGRESS_RE = re.compile(r"CLIPFORGE_PROGRESS:\s*([\d.]+)%")
@@ -77,14 +91,54 @@ def _keep_log(pk, log_path):
 
 
 def _download(pk, video_id, destination, rep=None):
+    """Try the strategies in order; only a 403 Forbidden moves on to the next one."""
+    tried = []
+    combined = destination / 'yt_dlp_all.log'
+    try:
+        for n, (name, fmt) in enumerate(STRATEGIES, 1):
+            if n > 1:
+                _clean_partial(destination)
+                msg = f'YouTube отказал в загрузке (403) — пробуем ещё раз: {name} (попытка {n} из {len(STRATEGIES)})'
+                if rep is not None:
+                    rep.frac(0.0, msg)
+                else:
+                    _update(pk, 2, msg)
+            try:
+                _download_once(pk, video_id, destination, rep, fmt, combined, f'попытка {n}: {name}')
+                return name
+            except Forbidden:
+                tried.append(name)
+        raise RuntimeError(
+            'YouTube запрещает загрузку этого видео (HTTP 403) всеми способами: ' + ', '.join(tried) + '.\n'
+            'Что можно сделать:\n'
+            '1) обновить yt-dlp — запустите setup.bat (он обновляет yt-dlp) и нажмите «Продолжить»;\n'
+            '2) попробовать позже — такие отказы часто временные;\n'
+            '3) скачать видео самостоятельно (если у вас есть права) и положить файл в папку source_library\\ '
+            f'с именем {video_id}.mp4 или загрузить его файлом (до {MAX_BYTES / 1024 ** 3:.0f} ГБ).\n'
+            f'Журнал: logs\\ytdlp-{pk}.log')
+    finally:
+        _keep_log(pk, combined if combined.exists() else destination / 'yt_dlp.log')
+
+
+def _clean_partial(destination):
+    """Remove half-downloaded pieces of a failed attempt (temporary download folder only)."""
+    for f in destination.iterdir():
+        if f.is_file() and not f.name.startswith('yt_dlp'):
+            try:
+                f.unlink()
+            except OSError:
+                pass
+
+
+def _download_once(pk, video_id, destination, rep, fmt, combined, title):
     # sys.executable avoids depending on yt-dlp.exe being present in PATH.
     cmd = [
         sys.executable, '-m', 'yt_dlp', '--no-playlist',
         '--newline', '--progress-template', 'download:CLIPFORGE_PROGRESS:%(progress._percent_str)s',
         '--no-write-info-json', '--no-write-thumbnail',
         '--max-filesize', str(MAX_BYTES), '--socket-timeout', '20', '--retries', '3',
-        '--fragment-retries', '3', '--merge-output-format', 'mp4',
-        '-f', FORMAT, *js_runtime_args(),
+        '--fragment-retries', '10', '--merge-output-format', 'mp4',
+        '-f', fmt, *js_runtime_args(),
         '-o', str(destination / '%(id)s.%(ext)s'),
         'https://www.youtube.com/watch?v=' + video_id,
     ]
@@ -129,11 +183,18 @@ def _download(pk, video_id, destination, rep=None):
                     raise TimeoutError('yt-dlp не выводит новых сообщений более 5 минут.')
             if proc.returncode != 0:
                 tail = log_path.read_bytes()[-4000:].decode('utf-8', errors='replace')
+                if FORBIDDEN_RX.search(tail):
+                    raise Forbidden(tail[-1500:])
                 raise RuntimeError('yt-dlp завершился с ошибкой: ' + tail[-1500:])
     finally:
         if proc is not None:
             _stop_tree(proc)
-        _keep_log(pk, log_path)
+        try:
+            with combined.open('ab') as out:
+                out.write(f'\n===== {title} =====\n'.encode('utf-8'))
+                out.write(log_path.read_bytes()[-200000:])
+        except OSError:
+            pass
 
 
 def fetch_source(pk, rep=None):
