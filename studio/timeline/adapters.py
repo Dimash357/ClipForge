@@ -68,7 +68,9 @@ def _style(opts):
     return m.Style(id=stable_id('st', name, font, words), font=font, size=int(st['size']), bold=bold,
                    uppercase=bool(st['upper']), color=st['primary'], highlight_color=st['active'],
                    outline_color=st['outline_c'], outline=float(st['outline']), max_words=max(1, min(12, words)),
-                   ext={'clipforge.style': {'name': name, 'censor': bool(opts.get('caption_censor'))}})
+                   ext={'clipforge.style': {'name': name, 'censor': bool(opts.get('caption_censor')),
+                                            'font_choice': font_choice, 'animate': bool(opts.get('caption_animate', True)),
+                                            'highlight': opts.get('caption_highlight')}})
 
 
 def _words(transcript, start, end, censor):
@@ -114,7 +116,8 @@ def clip_timeline(*, project_id, clip_id, source_name, fingerprint, clip_start, 
         extra = TRANSITION_SECONDS if fade and i < len(segs) - 1 else 0.0
         video_items.append(m.VideoItem(id=stable_id('it', 'clip', clip_id, 'video', i), start=s0,
                                        duration=round(s1 - s0 + extra, 3), scene=sid, asset=src.id,
-                                       src_in=round(float(clip_start) + s0, 3), layout=_layout(sg, plan, opts)))
+                                       src_in=round(float(clip_start) + s0, 3), volume=0.0,   # sound: audio track
+                                       layout=_layout(sg, plan, opts)))
     if fade:
         for a, b in zip(video_items, video_items[1:]):
             transitions.append(m.TransitionItem(id=stable_id('it', 'clip', clip_id, 'fade', a.id), start=b.start,

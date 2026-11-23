@@ -30,6 +30,8 @@ MAX_CONCURRENT_JOBS = max(1, int(os.getenv('CLIPFORGE_MAX_JOBS', '1')))
 import sys as _sys
 SOUND_MODEL_DOWNLOAD = not (len(_sys.argv) > 1 and _sys.argv[1] == 'test') and os.getenv('CLIPFORGE_SOUND_DOWNLOAD', '1') == '1'
 # Largest source video (upload, YouTube download, source_library). Long streams in 1080p easily exceed 1 GB.
+# experimental: render Stream Clipper clips through the Timeline IR renderer (falls back to the classic one on error)
+TIMELINE_RENDERER = os.getenv('CLIPFORGE_TIMELINE_RENDERER', '0').lower() in ('1', 'true', 'on', 'yes')
 MAX_SOURCE_BYTES = int(float(os.getenv('CLIPFORGE_MAX_SOURCE_GB', '8')) * 1024 ** 3)
 LOG_DIR = BASE_DIR / 'logs'
 LOG_DIR.mkdir(exist_ok=True)

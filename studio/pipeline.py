@@ -906,9 +906,14 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             temp.mkdir()
             dest = temp / 'out.mp4'
             clip = {'start': c.start, 'end': c.end}
+            progress = (lambda f, i=i: rep.frac((i + f) / n, f'Рендер клипа {i + 1} из {n}: {int(f * 100)}%'))
+            info = None
+            if getattr(settings, 'TIMELINE_RENDERER', False):          # experimental, off by default
+                info = _timeline_render(p, c, plans[c.pk], cfg, vinfo, segments, dest, temp, rep, progress)
             try:
-                info = editor.render(source, clip, segments, dest, temp, cfg['opts'], plans[c.pk], vinfo, cfg['mode'], rep=rep,
-                                     on_progress=lambda f, i=i: rep.frac((i + f) / n, f'Рендер клипа {i + 1} из {n}: {int(f * 100)}%'))
+                if info is None:
+                    info = editor.render(source, clip, segments, dest, temp, cfg['opts'], plans[c.pk], vinfo, cfg['mode'],
+                                         rep=rep, on_progress=progress)
             except JobCancelled:
                 raise
             except Exception as exc:
@@ -930,7 +935,7 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             prev = c.render_info or {}
             info['opts'] = prev.get('opts') or {}
             info['mode'] = cfg['mode']
-            if not info.get('fallback_renderer'):
+            if not info.get('fallback_renderer') and 'timeline' not in info:
                 info['timeline'] = _timeline_snapshot(p, c, plans[c.pk], cfg['opts'], vinfo, info, segments)
             c.render_info = info
             c.status, c.error = 'ready', ''
@@ -988,6 +993,47 @@ def _timeline_snapshot(p, c, plan, opts, vinfo, info, segments):
     except Exception:
         log.exception('timeline snapshot failed for clip %s (the render itself is fine)', c.pk)
         return None
+
+
+def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progress):
+    """Experimental path (settings.TIMELINE_RENDERER): plan -> Timeline IR -> timeline renderer.
+    -> render_info dict, or None when anything goes wrong (the caller then renders with the classic renderer)."""
+    opts = cfg['opts']
+    try:
+        from .timeline import adapters, renderer
+        from .timeline.serialize import to_dict
+        segs = plan['segments']
+        fps = None
+        if opts['fps'] != 'source' and int(opts['fps']) < vinfo['fps'] - 0.5:
+            fps = int(opts['fps'])
+        target = exports.LOUDNESS.get(opts.get('loudness', 'stream')) if vinfo.get('has_audio', True) else None
+        pre = {'fps': fps or 'source', 'transition': opts['transition'] if len(segs) > 1 else 'none',
+               'mode': cfg['mode'], 'auto': plan.get('auto'), 'notes': plan.get('notes', []),
+               'loudness': {'target': target['I'], 'mode': 'two-pass'} if target else {'target': None}}
+        tl = adapters.clip_timeline(project_id=p.pk, clip_id=c.pk, source_name=p.source.name,
+                                    fingerprint=p.source_fingerprint, clip_start=c.start, clip_end=c.end, plan=plan,
+                                    opts=opts, vinfo=vinfo, render_info=pre, transcript=segments, title=c.title)
+        r = renderer.render(tl, dest, renderer.RenderSettings(quality=opts['quality'], encoder=opts['encoder'],
+                                                              workdir=Path(temp) / 'tl'),
+                            on_progress=on_progress, cancel=rep.cancelled)
+    except JobCancelled:
+        raise
+    except Exception as exc:
+        log.warning('timeline renderer failed for clip %s (%s); using the classic renderer', c.pk, str(exc)[:300])
+        return None
+    loud = (r.get('audio') or {}).get('loudness') or []
+    caps = (r.get('captions') or {}).get('items') or []
+    return {'renderer': 'timeline', 'encoder': r['encoder'], 'encoder_note': r['encoder_note'],
+            'encoder_fallback': bool(r.get('encoder_fallback')), 'graph_chars': r.get('graph_chars'),
+            'size': r['size'], 'segments': editor._public_segments(segs),
+            'captions': dict(caps[0] if caps else {}, enabled=bool(opts['captions']), style=opts['subtitle_style'],
+                             censor=bool(opts.get('caption_censor'))),
+            'notes': plan.get('notes', []), 'fps': pre['fps'], 'transition': pre['transition'],
+            'loudness': ({k: v for k, v in loud[0].items() if k != 'item'} if loud else pre['loudness']),
+            'auto': plan.get('auto'), 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
+                                                                 for k, v in plan['cam'].items()},
+            'timeline': to_dict(tl), 'timeline_render': {k: r[k] for k in ('scenes', 'seconds', 'rendered_scenes',
+                                                                           'timeline_hash', 'version')}}
 
 
 def _short_meta(p, ok_ids, rep):

@@ -99,3 +99,39 @@ def faceless(seed='demo'):
     ]
     return ensure_valid(m.Timeline(id=tl_id, kind='faceless', duration=12.0, assets=assets, scenes=scenes,
                                    tracks=tracks, styles=[hook, caps], meta={'title': 'Два факта', 'format': 'facts'}))
+
+
+def placeholder_assets(tl, base_dir, overwrite=False):
+    """Small local stand-ins for every file:/gen: asset of a timeline (ffmpeg test patterns and tones), so the
+    example timelines render without any generated or downloaded media. -> list of created files."""
+    import subprocess
+    from pathlib import Path
+    from .media import Resolver
+    res = Resolver(base_dir)
+    made = []
+    for i, a in enumerate(tl.assets):
+        scheme, rel = a.uri.split(':', 1)
+        if scheme not in ('gen', 'file'):
+            continue
+        dest = (res.root_for(scheme) / rel).resolve()
+        if dest.exists() and not overwrite:
+            continue
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dur = f'{a.duration or 5.0:.3f}'
+        hz = 220 + 110 * (i % 5)
+        if a.type == 'image':
+            src = ['-f', 'lavfi', '-i', f'testsrc2=s={a.width or 1024}x{a.height or 1024}:r=1', '-frames:v', '1']
+        elif a.type == 'audio':
+            src = ['-f', 'lavfi', '-i', f'sine=frequency={hz}:sample_rate=48000:duration={dur}', '-ac', '2']
+        elif a.type == 'video':
+            src = ['-f', 'lavfi', '-i', f'testsrc2=s={a.width or 1280}x{a.height or 720}:r=30:d={dur}']
+            if a.has_audio:
+                src += ['-f', 'lavfi', '-i', f'sine=frequency={hz}:sample_rate=48000:duration={dur}', '-shortest',
+                        '-c:a', 'aac']
+            src += ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p']
+        else:
+            continue
+        subprocess.run(['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', *src, 'file:' + str(dest)], check=True,
+                       timeout=300)
+        made.append(dest)
+    return made
