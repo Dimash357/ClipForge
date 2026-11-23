@@ -930,6 +930,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             prev = c.render_info or {}
             info['opts'] = prev.get('opts') or {}
             info['mode'] = cfg['mode']
+            if not info.get('fallback_renderer'):
+                info['timeline'] = _timeline_snapshot(p, c, plans[c.pk], cfg['opts'], vinfo, info, segments)
             c.render_info = info
             c.status, c.error = 'ready', ''
             c.save()
@@ -972,6 +974,20 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         raise RuntimeError('Ни один клип не удалось отрендерить: ' + (failed[0].error[-400:] if failed else ''))
     msg = 'Готово!' if not failed else f'Готово: {len(ok_ids)} из {n} клипов, у остальных ошибка рендера.'
     set_state(pk, status='done', progress=100, stage='', stage_progress=None, message=msg, error='')
+
+
+def _timeline_snapshot(p, c, plan, opts, vinfo, info, segments):
+    """Timeline IR of the clip exactly as it was rendered (stored in render_info['timeline']).
+    Describes, never drives, the render: any problem here is logged and the clip is kept as it is."""
+    try:
+        from .timeline import adapters
+        return adapters.clip_timeline_dict(
+            project_id=p.pk, clip_id=c.pk, source_name=p.source.name, fingerprint=p.source_fingerprint,
+            clip_start=c.start, clip_end=c.end, plan=plan, opts=opts, vinfo=vinfo, render_info=info,
+            transcript=segments, title=c.title)
+    except Exception:
+        log.exception('timeline snapshot failed for clip %s (the render itself is fine)', c.pk)
+        return None
 
 
 def _short_meta(p, ok_ids, rep):
