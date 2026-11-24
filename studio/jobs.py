@@ -504,6 +504,20 @@ def request_cancel(pk):
     return bool(job and cancel_job(job.pk))
 
 
+def release_script(script_id):
+    """A script left 'generating' by a job that never ran (cancelled in the queue, lost) -> ready / draft again.
+    -> True if it was released."""
+    from .models import Job, Script
+    if Job.objects.filter(payload__script_id=script_id, status__in=Job.LIVE).exists():
+        return False
+    sc = Script.objects.filter(pk=script_id, status='generating').first()
+    if sc is None:
+        return False
+    Script.objects.filter(pk=sc.pk, status='generating').update(
+        status='ready' if (sc.data or {}).get('scenes') else 'draft')
+    return True
+
+
 def cancel_job(job_id):
     from .models import Job
     job = Job.objects.filter(pk=job_id).first()
@@ -514,6 +528,8 @@ def cancel_job(job_id):
                        cancel_requested=True, pause_requested=False)
         if not n:
             return False
+        if (job.payload or {}).get('script_id'):
+            release_script((job.payload or {})['script_id'])
         if job.project_id:
             from .pipeline import after_cancel
             after_cancel(job.project_id)

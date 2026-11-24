@@ -822,6 +822,7 @@ def script_detail(request, pk):
 
 
 def _script_json(sc):
+    _generating(sc)
     job = Job.objects.filter(kind='script', payload__script_id=sc.pk).order_by('-created_at').first()
     return {'id': sc.pk, 'title': sc.title, 'idea': sc.idea, 'format': sc.format, 'language': sc.language,
             'duration': sc.duration, 'genre': sc.genre, 'style': sc.style, 'audience': sc.audience, 'status': sc.status,
@@ -833,6 +834,16 @@ def script_api(request, pk):
     return JsonResponse(_script_json(get_object_or_404(Script, pk=pk)))
 
 
+def _generating(sc):
+    """Busy only while a job for the script is really live (a status left behind by a lost job is released)."""
+    if sc.status != 'generating':
+        return False
+    if jobs.release_script(sc.pk):
+        sc.refresh_from_db()
+        return False
+    return True
+
+
 def _script_busy():
     return JsonResponse({'error': 'Сценарий уже генерируется — дождитесь окончания.'}, status=409)
 
@@ -842,7 +853,7 @@ def script_generate(request, pk):
     """Regenerate the whole script (optionally with new settings)."""
     from . import scripts as sg
     sc = get_object_or_404(Script, pk=pk)
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     data = _json_body(request)
     st = sg.settings_of(dict(sg.settings_of(sc), **{k: v for k, v in data.items() if k in
@@ -861,7 +872,7 @@ def script_scene(request, pk, sid, action=None):
     """POST .../scenes/<sid>/ {changes}: manual edit. POST .../scenes/<sid>/regenerate/ {instruction}: new version."""
     from . import scripts as sg
     sc = get_object_or_404(Script, pk=pk)
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     if not any(s['id'] == sid for s in (sc.data or {}).get('scenes', [])):
         raise Http404
@@ -917,7 +928,7 @@ def storyboard_api(request, pk):
         mj = Job.objects.filter(kind='media', payload__script_id=sc.pk).order_by('-created_at').first()
         d['media_job'] = _live_info(mj)
         return JsonResponse(d)
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     if not (sc.data or {}).get('scenes'):
         return JsonResponse({'error': 'Сначала нужен готовый сценарий.'}, status=400)
@@ -934,7 +945,7 @@ def storyboard_frame(request, pk, fid, action=None):
     """.../frames/<fid>/ {changes}: edit; .../move/ {to}: reorder; .../regenerate/ {instruction}: new version."""
     from . import storyboard as sb
     sc = get_object_or_404(Script, pk=pk)
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     if not (sc.data or {}).get('storyboard'):
         return JsonResponse({'error': 'Раскадровки ещё нет.'}, status=400)
@@ -960,7 +971,7 @@ def storyboard_bible(request, pk):
     """{style: {...}, characters: {id: {...}}} -> prompts of all frames re-composed (hand-written ones kept)."""
     from . import storyboard as sb
     sc = get_object_or_404(Script, pk=pk)
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     if not (sc.data or {}).get('storyboard'):
         return JsonResponse({'error': 'Раскадровки ещё нет.'}, status=400)
@@ -989,7 +1000,7 @@ def media_config(request):
 
 
 def _media_ready(sc):
-    if sc.status == 'generating':
+    if _generating(sc):
         return _script_busy()
     if not (sc.data or {}).get('storyboard'):
         return JsonResponse({'error': 'Сначала нужна раскадровка (3B).'}, status=400)
@@ -1143,6 +1154,7 @@ def _submit_production(sc, payload):
 def studio_api(request, pk):
     from . import production
     sc = get_object_or_404(Script, pk=pk)
+    _generating(sc)
     d = production.overview(sc.data or {}, sc)
     j = _production_job(sc)
     d.update(id=sc.pk, idea=sc.idea, status=sc.status, error=sc.error, media_url=settings.MEDIA_URL,
@@ -1151,6 +1163,10 @@ def studio_api(request, pk):
                                              stage=_stage_label(j.stage), error=j.error[:500] if j.error else ''))
     mj = Job.objects.filter(kind='media', payload__script_id=sc.pk).order_by('-created_at').first()
     d['media_job'] = None if mj is None or mj.status not in Job.LIVE else {'id': mj.pk, 'message': mj.message}
+    if j is None or j.status not in Job.LIVE:              # a stage left 'running' by a lost worker
+        for v in d['stages'].values():
+            if v['status'] == 'running':
+                v['status'] = 'pending'
     sb = (sc.data or {}).get('storyboard') or {}
     d['frames'] = [{'id': f['id'], 'scene': s['id'], 'image': ((f.get('assets') or {}).get('image') or {}),
                     'shot': f.get('shot'), 'camera': f.get('camera')}

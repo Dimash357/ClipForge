@@ -29,3 +29,7 @@ ffmpeg/
 
 # local runtime settings (resource mode)
 clipforge_settings.json
+
+# AI providers installed by install_ai.bat
+/ai/
+ai_env.bat

@@ -226,3 +226,14 @@ class Api(Base):
         sc = Script.objects.get(pk=pk)
         self.assertEqual(sc.data['production']['meta']['title'], 'Мой заголовок')
         self.assertEqual(sc.data['production']['output']['rendered_scenes'], 0)     # audio-only change: scene cache
+
+
+class Stability(TransactionTestCase):
+    def test_cancel_in_queue_releases_the_script(self):
+        from studio.models import Job
+        sc = Script.objects.create(idea='x', status='generating', data={'scenes': [{'id': 's'}]})
+        j = Job.objects.create(kind='production', payload={'script_id': sc.pk}, status=Job.QUEUED, resource='heavy')
+        self.assertTrue(jobs.cancel_job(j.pk))
+        self.assertEqual(Script.objects.get(pk=sc.pk).status, 'ready')
+        lost = Script.objects.create(idea='y', status='generating', data={})      # no job at all
+        self.assertEqual(self.client.get(f'/api/studio/{lost.pk}/').json()['status'], 'draft')

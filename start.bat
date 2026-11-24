@@ -16,6 +16,9 @@ echo      Run setup.bat first.
 pause
 exit /b 1
 :env_ok
+rem AI providers (install_ai.bat): LLM settings + background start of Ollama / ComfyUI. Never fatal.
+if exist "%~dp0ai_env.bat" call "%~dp0ai_env.bat"
+if exist "%~dp0ai\install_ai.json" "%ENVPY%" tools\install_ai.py start-services
 "%ENVPY%" tools\preflight.py all || goto failed
 "%ENVPY%" tools\preflight.py backup-db || goto failed
 "%ENVPY%" manage.py migrate || goto failed
