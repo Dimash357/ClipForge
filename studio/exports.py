@@ -46,6 +46,8 @@ DEFAULTS = {
     'hook_engine': 'suggest',
     # v6 (2B): Smart Editing - off | natural | dynamic | aggressive (cuts pauses / repeats / dull parts)
     'smart_edit': 'off',
+    # v6 (2C): Viral Director - off | rank (score, explain, mark duplicates) | auto (also pick the best clips + combo)
+    'viral_director': 'rank',
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
@@ -56,6 +58,7 @@ CHOICES = {
     'caption_font': {'style', 'Montserrat', 'Arial Black', 'Arial', 'Impact'},
     'hook_engine': {'off', 'suggest', 'auto'},
     'smart_edit': {'off', 'natural', 'dynamic', 'aggressive'},
+    'viral_director': {'off', 'rank', 'auto'},
 }
 LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',

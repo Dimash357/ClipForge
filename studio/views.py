@@ -27,7 +27,7 @@ OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'capti
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
                  'highlight_audio', 'highlight_motion', 'loudness', 'streamer', 'highlight_sound_ai', 'caption_font',
-                 'caption_censor', 'hook_engine', 'smart_edit')
+                 'caption_censor', 'hook_engine', 'smart_edit', 'viral_director')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
               'highlight_motion', 'highlight_sound_ai', 'caption_censor')
 
@@ -618,3 +618,69 @@ def _edit_modes():
     from . import smartedit
     return {'off': {'label': 'Оригинал', 'note': 'без вырезок'},
             **{k: {'label': v['label'], 'note': v['note']} for k, v in smartedit.MODES.items()}}
+
+
+# ---------------------------------------------------------------- Viral Director (2C)
+class _QuietRep:
+    def frac(self, *a, **k):
+        pass
+
+    def cancelled(self):
+        return False
+
+
+def _ranking(p):
+    out = []
+    for c in p.clips.exclude(status='candidate').order_by('position'):
+        v = (c.meta or {}).get('viral')
+        if v:
+            out.append({'id': c.pk, 'title': c.title, 'score': v['score'], 'rank': v.get('rank'),
+                        'duplicate_of': v.get('duplicate_of'), 'combo': v.get('combo'), 'gain': v.get('gain'),
+                        'applied': v.get('applied')})
+    return sorted(out, key=lambda x: (x['rank'] is None, x['rank'] or 0, -x['score']))
+
+
+@require_http_methods(['GET', 'POST'])
+def project_viral(request, pk):
+    """GET: the project's ranking. POST: re-score every clip (plans only, nothing is rendered)."""
+    from . import pipeline as pl
+    from .viral import DISCLAIMER
+    p = get_object_or_404(Project, pk=pk)
+    if request.method == 'POST':
+        if jobs.is_active(p.pk):
+            return _busy(p.pk)
+        if not p.transcript:
+            return JsonResponse({'error': 'Нет транскрипта — обработайте проект.'}, status=400)
+        clips = list(p.clips.exclude(status='candidate'))
+        opts = dict(exports.resolve(p.options), viral_director='rank')
+        pl._viral_director(p, clips, p.transcript, opts, _QuietRep(), apply=False)
+    return JsonResponse({'ranking': _ranking(p), 'disclaimer': DISCLAIMER})
+
+
+@require_POST
+def clip_viral_apply(request, pk):
+    """Apply the clip's best Hook x Smart Editing combination -> re-render in the queue."""
+    from . import hooks
+    clip = get_object_or_404(Clip, pk=pk)
+    p = clip.project
+    v = (clip.meta or {}).get('viral')
+    if not v:
+        return JsonResponse({'error': 'Сначала оцените клипы (Viral Director).'}, status=400)
+    if jobs.is_active(p.pk):
+        return _busy(p.pk)
+    combo = v['combo']
+    meta = dict(clip.meta)
+    h = meta.get('hooks')
+    var = hooks.variant(h, combo.get('hook')) if h else None
+    if h is not None:
+        h['selected'] = None if not var or var['kind'] == 'original' else var['id']
+        meta['hooks'] = h
+    meta['edit'] = {'mode': combo['edit'], 'restore': []}
+    meta['viral'] = dict(v, applied=True)
+    clip.meta = meta
+    clip.save(update_fields=['meta', 'updated_at'])
+    a, b = (var['start'], var['end']) if var and var['kind'] == 'start' else tuple((h or {}).get('clip') or
+                                                                                   (clip.start, clip.end))
+    if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], bounds={str(clip.pk): [a, b]}, hook=True):
+        return _busy(p.pk)
+    return JsonResponse({'ok': True, 'combo': combo})

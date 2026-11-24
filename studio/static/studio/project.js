@@ -53,7 +53,7 @@ function render(d) {
   }
   $('progresspanel').style.display = (d.status === 'done' && !d.error && d.clips.length) ? 'none' : 'block';
   if (d.status === 'done' && d.clips.some(c => c.status === 'error')) $('progresspanel').style.display = 'block';
-  renderReview(d); renderClips(d);
+  renderReview(d); renderClips(d); renderViral(d);
 }
 
 async function cancel() { await post(`/api/projects/${PID}/cancel/`); poll(); }
@@ -150,6 +150,7 @@ function clipCard(c) {
       c.fallback_renderer ? h('span', {class: 'chip q-warn', text: 'резервный рендер v4'}) : null, h('span', {class: 'chip', text: `Score ${c.score}`})),
     h('h3', {text: c.title})];
   if (c.status === 'ready') kids.push(shortMeta(c));
+  if (meta.viral) kids.splice(2, 0, viralBox(c));
   if (meta.hooks || c.status === 'ready') kids.push(hookBox(c));
   if (c.status === 'ready' || meta.edit) kids.push(editBox(c));
   if (c.error) kids.push(h('div', {class: 'error', text: c.error}));
@@ -293,6 +294,41 @@ function editBox(c) {
   return box;
 }
 
+// ---------------------------------------------------------------- Viral Director (2C)
+const PART_RU = {hook: ['начало', 25], emotion: ['эмоции', 20], dynamics: ['динамика', 15], coherence: ['связность', 15], originality: ['оригинальность', 10], retention: ['удержание', 15]};
+const EDIT_RU = {off: 'без монтажа', natural: 'Natural', dynamic: 'Dynamic', aggressive: 'Aggressive'};
+const comboText = (k) => `${k.hook_kind && k.hook_kind !== 'original' ? HOOK_KIND[k.hook_kind] : 'исходное начало'} + ${EDIT_RU[k.edit]}`;
+let viralSig = '';
+function renderViral(d) {
+  const box = $('viral'); if (!box) return;
+  const list = d.clips.filter(c => c.meta && c.meta.viral && c.status !== 'candidate')
+    .sort((a, b) => (a.meta.viral.rank ?? 99) - (b.meta.viral.rank ?? 99));
+  const sig = JSON.stringify(list.map(c => [c.id, c.meta.viral.score, c.meta.viral.rank, c.meta.viral.applied, c.title]));
+  if (sig === viralSig) return; viralSig = sig;
+  if (!list.length) { box.replaceChildren(); return; }
+  const rows = list.map(c => { const v = c.meta.viral; return h('div', {class: 'row', style: 'justify-content:space-between'},
+    h('span', {text: `${v.rank ? '#' + v.rank : '—'} ${c.title}`}),
+    h('small', {class: 'muted', text: `${Math.round(v.score)}/100 · ${comboText(v.combo)}` + (v.duplicate_of ? ' · похож на другой клип' : '') + (v.applied ? ' · применено' : (v.gain > 0 ? ` · +${v.gain} если применить` : ''))})); });
+  box.replaceChildren(h('details', {class: 'panel', style: 'padding:12px'}, h('summary', {text: `Viral Director: лучший клип — ${list[0].title} (${Math.round(list[0].meta.viral.score)}/100)`}),
+    ...rows, h('small', {class: 'muted', text: 'Оценка — эвристика сборки Shorts, не прогноз просмотров.'}),
+    h('div', {class: 'row'}, h('button', {type: 'button', class: 'sm', text: '↻ Переоценить', onclick: async () => { await post(`/api/projects/${PID}/viral/`); poll(); }}))));
+}
+function viralBox(c) {
+  const v = c.meta.viral;
+  const box = h('details', {class: 'hookbox'});
+  box.append(h('summary', {text: `Viral ${Math.round(v.score)}/100` + (v.rank ? ` · #${v.rank} в проекте` : '') + (v.duplicate_of ? ' · дубль' : '')}));
+  box.append(h('small', {class: 'muted', text: Object.entries(v.parts).map(([k, x]) => `${PART_RU[k][0]} ${x}/${PART_RU[k][1]}`).join(' · ')}),
+    h('div', {class: 'hint', text: (v.reasons || []).map(r => `${r.points ? r.points + ' ' : ''}${r.text}`).join(' · ')}));
+  if (v.tips && v.tips.length) box.append(h('ul', {class: 'hint'}, ...v.tips.map(t => h('li', {text: t}))));
+  box.append(h('div', {class: 'hint', text: `Лучшая комбинация: ${comboText(v.combo)}` + (v.gain > 0 ? ` (+${v.gain} к оценке без изменений)` : '')}));
+  if ((v.combos || []).length > 1) box.append(h('small', {class: 'muted', text: 'Сравнено: ' + v.combos.map(k => `${comboText(k)} ${Math.round(k.score)}`).join(' · ')}));
+  const err = h('div', {class: 'error', style: 'display:none'});
+  if (!v.applied && v.gain > 0) box.append(h('button', {type: 'button', class: 'sm primary', text: 'Применить лучшую комбинацию', onclick: async () => {
+    const r = await post(`/api/clips/${c.id}/viral/`); if (!r.ok) { err.style.display = 'block'; err.textContent = (await r.json()).error || 'Не удалось'; return; } poll(); }}));
+  box.append(err, h('small', {class: 'muted', text: v.disclaimer || ''}));
+  return box;
+}
+
 function shortMeta(c) {
   const s = c.short;
   const box = h('div', {class: 'shortmeta'});
@@ -328,7 +364,7 @@ function renderClips(d) {
   const ids = new Set(list.map(c => c.id));
   for (const [id, v] of cards) if (!ids.has(id)) { v.el.remove(); cards.delete(id); }
   for (const c of list) {
-    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, (c.meta || {}).hooks && [(c.meta.hooks.variants || []).length, c.meta.hooks.selected, c.meta.hooks.recommended], (c.meta || {}).edit && [c.meta.edit.mode, (c.meta.edit.restore || []).length, c.meta.edit.plan && c.meta.edit.plan.stats.removed], c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
+    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, (c.meta || {}).hooks && [(c.meta.hooks.variants || []).length, c.meta.hooks.selected, c.meta.hooks.recommended], (c.meta || {}).viral && [c.meta.viral.score, c.meta.viral.rank, c.meta.viral.applied], (c.meta || {}).edit && [c.meta.edit.mode, (c.meta.edit.restore || []).length, c.meta.edit.plan && c.meta.edit.plan.stats.removed], c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
     const cur = cards.get(c.id);
     if (cur && cur.sig === sig) continue;
     const el = clipCard(c);

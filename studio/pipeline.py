@@ -708,7 +708,7 @@ def _sound_timeline(source, wav, duration, cache, rep, cancel, notes):
 
 
 def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None, cache=None, wav=None,
-                    screen_job=None):
+                    screen_job=None, count=None):
     """New ranker first; the proven v4 algorithm is the fallback when it errors or finds nothing."""
     if opts['highlight_engine'] == 'smart':
         screen = None
@@ -722,7 +722,7 @@ def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=No
             log.exception('highlight signals failed')
             audio = motion = None
         try:
-            sel = highlights.find_highlights(segments, duration, p.clip_min, p.clip_max, p.clip_count,
+            sel = highlights.find_highlights(segments, duration, p.clip_min, p.clip_max, count or p.clip_count,
                                              rerank=ollama_rank if os.getenv('USE_OLLAMA', '0') == '1' else None,
                                              audio=audio, motion=motion, screen=screen,
                                              auto_length=bool(opts.get('auto_length')))
@@ -736,7 +736,7 @@ def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=No
         except Exception:
             log.exception('smart highlights failed; using classic ranker')
     ranked = ollama_rank(candidates(segments, duration, p.clip_min, p.clip_max))
-    sel = choose(ranked, p.clip_count)
+    sel = choose(ranked, count or p.clip_count)
     for c in sel:
         c.update({'engine': 'classic', 'scores': {}, 'reason': 'Выбран классическим алгоритмом (резервный режим).'})
     return sel
@@ -936,8 +936,9 @@ def _run_full_rest(p, pk, rep, payload, opts, source, duration, vinfo, fp, cache
         return
     analysis['language'] = (p.transcript_meta or {}).get('detected_language') or p.language
     rep.stage('highlights', 'Ищем интересные моменты...', frac=None)
+    pool = min(8, p.clip_count * 2) if opts.get('viral_director') == 'auto' else None   # choose the best of more
     selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep, cache=cache, wav=wav,
-                               screen_job=screen_job)
+                               screen_job=screen_job, count=pool)
     analysis['candidates'] = [{'start': c['start'], 'end': c['end'], 'interest': (c.get('scores') or {}).get('interest'),
                                'engine': c.get('engine')} for c in selected]
     set_state(pk, analysis=analysis)
@@ -956,6 +957,7 @@ def _run_full_rest(p, pk, rep, payload, opts, source, duration, vinfo, fp, cache
                                                    auto_bounds=c.get('auto_bounds') or [c['start'], c['end']]),
             title=f'Highlight {i + 1}', status='candidate' if review else 'queued'))
     _find_hooks(p, clips, segments, source, vinfo, opts, rep)
+    clips = _viral_director(p, clips, segments, opts, rep, review=review)
     rep.checkpoint('clips', ids=[c.pk for c in clips], review=bool(review))
     if review:
         set_state(pk, status='review', stage='', stage_progress=None,
@@ -1043,6 +1045,66 @@ def _clip_edits(p, c, cfg, segments):
             tl = hooks.prepend_teaser(tl, teaser, c.start, src_words=words if pl else None)
         return tl
     return {'transform': transform, 'info': info}
+
+
+def _viral_director(p, clips, segments, opts, rep, review=False, apply=None):
+    """Viral Director (2C): score Hook x Smart Editing combinations of every clip (plans only, no renders), mark
+    duplicates, rank. 'auto': keep the best clip_count clips and apply each one's best combination. -> clips."""
+    from . import hooks, resources, viral
+    mode = opts.get('viral_director', 'rank')
+    if mode == 'off' or not clips:
+        return clips
+    apply = (mode == 'auto') if apply is None else apply
+    rep.frac(0.97, 'Viral Director: сравниваем варианты начала и монтажа, отбираем лучшие клипы...')
+    try:
+        with resources.cpu_lease('Viral Director', 1):
+            sig = hooks.load_signals(p, segments)
+            texts = {c.pk: c.text or clip_text(segments, c.start, c.end) for c in clips}
+            reports = {}
+            for c in clips:
+                h = (c.meta or {}).get('hooks')
+                clip = tuple(h['clip']) if h and h.get('clip') else (c.start, c.end)
+                others = [t for k, t in texts.items() if k != c.pk]
+                r = viral.direct(sig, clip, h, c.scores or {}, others, p.clip_min, p.clip_max)
+                auto = (c.render_info or {}).get('auto')
+                if auto:
+                    r['reasons'].append({'points': 0, 'text': f'AI Auto: {auto.get("label") or auto.get("mode")}'})
+                reports[c.pk] = r
+            ranked = viral.rank([{'id': c.pk, 'range': (c.start, c.end), 'text': texts[c.pk],
+                                  'score': reports[c.pk]['score']} for c in clips])
+            keep = set(viral.select(ranked, p.clip_count)) if apply and not review else {c.pk for c in clips}
+            by_id = {c.pk: c for c in clips}
+            out = []
+            for pos, it in enumerate(ranked):
+                c = by_id[it['id']]
+                if c.pk not in keep:
+                    c.delete()                                   # not rendered yet: nothing on disk
+                    continue
+                r = dict(reports[c.pk], rank=it['rank'], duplicate_of=it['duplicate_of'], applied=False)
+                meta = dict(c.meta or {})
+                if apply and not review:
+                    combo = r['combo']
+                    h = meta.get('hooks')
+                    v = hooks.variant(h, combo['hook']) if h else None
+                    if h is not None:
+                        h['selected'] = None if not v or v['kind'] == 'original' else v['id']
+                        meta['hooks'] = h
+                    if v and v['kind'] == 'start':
+                        c.start, c.end = v['start'], v['end']
+                        c.text = clip_text(segments, c.start, c.end)[:4000]
+                    meta['edit'] = {'mode': combo['edit'], 'restore': []}
+                    r['applied'] = True
+                meta['viral'] = r
+                c.meta = meta
+                c.position = len(out)
+                c.save()
+                out.append(c)
+            return out
+    except JobCancelled:
+        raise
+    except Exception:
+        log.exception('viral director failed; clips are kept as chosen by the ranker')
+        return clips
 
 
 def _resumed_clips(p, rep):
@@ -1156,6 +1218,7 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
             keep_hooks = (c.meta or {}).get('hooks')         # so are the Hook Engine's variants and the choice
             keep_edit = (c.meta or {}).get('edit')           # and the Smart Editing mode / manual choices
+            keep_viral = (c.meta or {}).get('viral')         # and the Viral Director's report
             c.meta = metadata.generate(c.text or clip_text(segments, c.start, c.end), scene_types=types)
             if keep:
                 c.meta['short'] = keep
@@ -1163,6 +1226,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                 c.meta['hooks'] = keep_hooks
             if keep_edit:
                 c.meta['edit'] = keep_edit
+            if keep_viral:
+                c.meta['viral'] = keep_viral
             if c.meta.get('titles'):
                 c.title = c.meta['titles'][0][:240]
         except Exception:

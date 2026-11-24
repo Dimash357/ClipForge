@@ -12,7 +12,7 @@
 <div class="grid3"><div><label>Режим монтажа</label><select id="rv_mode">{% for k, label in edit_modes %}<option value="{{ k }}" {% if k == project.edit_mode %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div>
 <div><label>Стиль субтитров</label><select id="rv_style">{% for k, label in styles %}<option value="{{ k }}" {% if k == opts.subtitle_style %}selected{% endif %}>{{ label }}</option>{% endfor %}</select></div><div style="display:flex;align-items:end"><button class="primary" id="rv_go">▶ Рендерить выбранные</button></div></div>
 <div class="clips" id="candidates" style="margin-top:14px"></div></section>
-<section><h2>Результаты</h2><div class="clips" id="clips"><p class="muted">Клипы появятся после обработки.</p></div></section>
+<section><h2>Результаты</h2><div id="viral"></div><div class="clips" id="clips"><p class="muted">Клипы появятся после обработки.</p></div></section>
 <dialog id="dlg"><form method="dialog" id="dlgform"><h2 id="dlgtitle">Перемонтировать клип</h2>
 <video id="dlgvideo" controls preload="metadata"></video>
 <div class="grid2"><div><label>Начало, с</label><input type="number" step="0.1" min="0" id="d_start"><div class="row" style="margin-top:6px"><button type="button" class="sm" id="d_s_m">−1</button><button type="button" class="sm" id="d_s_p">+1</button><button type="button" class="sm" id="d_setstart">⇤ Взять из плеера</button></div></div>
