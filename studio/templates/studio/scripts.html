@@ -1,0 +1,27 @@
+{% extends "studio/base.html" %}
+{% block title %}Сценарии — ClipForge{% endblock %}
+{% block body %}
+<h1 style="font-size:28px">AI Script Generator</h1>
+<p class="muted">Сценарии для Faceless Shorts, историй, обучающих видео и мультфильмов: хук, развитие, кульминация, завершение — по сценам
+с репликами, визуалом и таймингами.
+{% if ai.kind %}Модель: <b>{{ ai.kind }}:{{ ai.model }}</b>{% if ai.paused_s %} (пауза {{ ai.paused_s }} с после ошибки){% endif %}.
+{% else %}Локальная LLM не подключена — будет шаблонный черновик. Для полноценного текста запустите <a href="https://ollama.com" target="_blank" rel="noopener">Ollama</a> и задайте <code>USE_OLLAMA=1</code>, <code>OLLAMA_MODEL</code> (например, qwen2.5:7b — около 5 ГБ, скачивается командой <code>ollama pull</code> по вашему решению).{% endif %}</p>
+<form method="post" class="panel" style="padding:16px;display:grid;gap:10px">{% csrf_token %}
+  <label>Тема или идея<textarea name="idea" rows="3" required placeholder="Например: почему кошки всегда приземляются на лапы"></textarea></label>
+  <div class="grid3" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:10px">
+    <label>Формат<select name="format">{% for k, l in formats %}<option value="{{ k }}">{{ l }}</option>{% endfor %}</select></label>
+    <label>Язык<select name="language">{% for k, l in langs %}<option value="{{ k }}">{{ l }}</option>{% endfor %}</select></label>
+    <label>Длительность, с<input type="number" name="duration" value="45" min="10" max="600"></label>
+    <label>Жанр<input name="genre" placeholder="юмор, мистика, научпоп…"></label>
+    <label>Стиль<input name="style" placeholder="динамичный, пиксель-арт, документальный…"></label>
+    <label>Аудитория<input name="audience" placeholder="школьники, геймеры, 25–35…"></label>
+    <label>Название (необязательно)<input name="title"></label>
+  </div>
+  <div><button class="primary" type="submit">Сгенерировать сценарий</button> <small class="muted">Генерация идёт в очереди задач.</small></div>
+</form>
+<h2 style="font-size:18px;margin-top:22px">Сценарии</h2>
+{% for s in scripts %}<div class="panel" style="padding:12px"><div class="row" style="justify-content:space-between">
+<a href="{% url 'script_detail' s.pk %}" style="font-weight:700">{{ s.title|default:s.idea|truncatechars:80 }}</a><span class="badge b-{{ s.status }}">{{ s.get_status_display }}</span></div>
+<small class="muted">#{{ s.pk }} · {{ s.get_format_display }} · {{ s.language }} · {{ s.duration }} с · {{ s.created_at|date:"d.m.Y H:i" }}</small></div>
+{% empty %}<p class="muted">Пока нет сценариев.</p>{% endfor %}
+{% endblock %}

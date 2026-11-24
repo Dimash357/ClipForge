@@ -102,3 +102,27 @@ class Job(models.Model):
 
     def __str__(self):
         return f'{self.kind} #{self.pk} ({self.status})'
+
+
+class Script(models.Model):
+    """AI Script Generator (3A): a script document (see studio/scripts.py) with its generation settings."""
+    FORMATS = [('faceless', 'Faceless Shorts'), ('story', 'История'), ('education', 'Обучающее видео'),
+               ('cartoon', 'Мультфильм')]
+    STATUSES = [('draft', 'Черновик'), ('generating', 'Генерируется'), ('ready', 'Готов'), ('error', 'Ошибка')]
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    title = models.CharField(max_length=250, blank=True)
+    idea = models.TextField()
+    format = models.CharField(max_length=16, choices=FORMATS, default='faceless')
+    language = models.CharField(max_length=8, default='ru')
+    duration = models.PositiveIntegerField(default=45)            # target seconds
+    genre = models.CharField(max_length=60, blank=True)
+    style = models.CharField(max_length=60, blank=True)
+    audience = models.CharField(max_length=120, blank=True)
+    status = models.CharField(max_length=16, choices=STATUSES, default='draft')
+    data = models.JSONField(default=dict, blank=True)              # the script document
+    error = models.TextField(blank=True)
+
+    def __str__(self):
+        return self.title or f'Script {self.pk}'

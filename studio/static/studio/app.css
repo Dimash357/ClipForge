@@ -132,3 +132,9 @@ footer{color:var(--mut);font-size:13px;margin-top:30px;text-align:center}
 .cs-cmp-videos video{width:100%;aspect-ratio:9/16;background:#000;border-radius:10px}
 .cs-cmp{border-collapse:collapse;font-size:13px}.cs-cmp th{text-align:left;padding:4px 10px;color:var(--mut)}.cs-cmp td{padding:4px 10px;text-align:center}.cs-cmp td.best{color:var(--ok);font-weight:800}
 @media (max-width:720px){.cs-ed-body{grid-template-columns:1fr}.cs-grid{grid-template-columns:repeat(2,1fr)}}
+
+/* AI Script Generator */
+.sg-scene{display:flex;flex-direction:column;gap:8px;margin-top:8px}.sg-scene.locked{border-color:var(--ok)}
+.sg-scene textarea,.sg-scene input,#sg-idea,details input{width:100%;background:#0d111c;border:1px solid #2a3350;border-radius:10px;color:inherit;
+  padding:8px 10px;font:inherit;box-sizing:border-box}.sg-scene .row input{flex:1;min-width:160px;width:auto}.sg-scene input[type=number]{width:110px;flex:0 0 auto}
+.b-generating{background:#1d2a52;color:#9db4ff}.b-ready{background:#10382a;color:var(--ok)}.b-draft{background:#222a40}

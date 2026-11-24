@@ -159,11 +159,36 @@ def _timeline_job(job, rep):
     rep.checkpoint('output', path=str(out.relative_to(settings.MEDIA_ROOT)), seconds=r['seconds'])
 
 
+def _script_job(job, rep):
+    """Generate a whole script or regenerate one scene (payload: script_id, action, scene_id, instruction)."""
+    from . import scripts
+    from .models import Script
+    sc = Script.objects.get(pk=job.payload['script_id'])
+    try:
+        if job.payload.get('action') == 'scene':
+            rep.stage('edit', 'Переписываем сцену...')
+            doc = scripts.regenerate_scene(sc.data, job.payload['scene_id'], job.payload.get('instruction', ''),
+                                           cancel=rep.cancelled)
+        else:
+            rep.stage('edit', 'Пишем сценарий (локальная модель может думать минуту-две)...')
+            doc = scripts.generate(scripts.settings_of(sc), cancel=rep.cancelled)
+        Script.objects.filter(pk=sc.pk).update(data=doc, status='ready', error='',
+                                               title=sc.title or doc['title'][:250])
+        rep.checkpoint('script', provider=doc.get('provider_last') or doc.get('provider'))
+    except JobCancelled:
+        Script.objects.filter(pk=sc.pk).update(status='ready' if sc.data else 'draft')
+        raise
+    except Exception as exc:
+        Script.objects.filter(pk=sc.pk).update(status='error', error=str(exc)[:1000])
+        raise
+
+
 def _register_builtin():
     for kind, label in (('full', 'Stream Clipper: обработка'), ('resume', 'Stream Clipper: продолжение'),
                         ('reprocess', 'Stream Clipper: заново'), ('render', 'Stream Clipper: рендер клипов')):
         register(kind, _pipeline_job, label=label)
     register('timeline_render', _timeline_job, label='Рендер Timeline IR', needs_project=False)
+    register('script', _script_job, label='Сценарий (AI Script Generator)', resource='light', needs_project=False)
 
 
 # ---------------------------------------------------------------- DB helpers (SQLite: retry on "locked")

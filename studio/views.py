@@ -14,7 +14,7 @@ from django.views.decorators.csrf import ensure_csrf_cookie
 from django.views.decorators.http import require_GET, require_http_methods, require_POST
 
 from . import captions, diagnostics, exports, jobs
-from .models import Clip, Job, Project
+from .models import Clip, Job, Project, Script
 from .pipeline import process_project  # noqa: F401  (kept importable for v4 compatibility)
 from .source_library import find_source
 from .youtube import get_metadata, parse_youtube_url
@@ -794,3 +794,101 @@ def zipfile_has_clips(path):
     import zipfile
     with zipfile.ZipFile(path) as z:
         return any(n.endswith('.mp4') for n in z.namelist())
+
+
+# ---------------------------------------------------------------- AI Script Generator (3A)
+def scripts_page(request):
+    from . import ai_provider, scripts as sg
+    if request.method == 'POST':
+        idea = request.POST.get('idea', '').strip()
+        if not idea:
+            return redirect('scripts')
+        sc = Script.objects.create(idea=idea[:2000], title=request.POST.get('title', '')[:250],
+                                   **{k: v for k, v in sg.settings_of(request.POST).items()
+                                      if k in ('format', 'language', 'duration', 'genre', 'style', 'audience')},
+                                   status='generating')
+        jobs.submit('script', title=f'Сценарий: {sc.title or idea[:60]}', script_id=sc.pk, action='full')
+        return redirect('script_detail', pk=sc.pk)
+    return render(request, 'studio/scripts.html', {
+        'scripts': Script.objects.order_by('-created_at')[:100], 'formats': sg.FORMATS.items(),
+        'langs': sg.LANGS.items(), 'ai': ai_provider.status()})
+
+
+@ensure_csrf_cookie
+def script_detail(request, pk):
+    from . import scripts as sg
+    sc = get_object_or_404(Script, pk=pk)
+    return render(request, 'studio/script.html', {'script': sc, 'parts': sg.PART_RU, 'formats': dict(sg.FORMATS)})
+
+
+def _script_json(sc):
+    job = Job.objects.filter(kind='script', payload__script_id=sc.pk).order_by('-created_at').first()
+    return {'id': sc.pk, 'title': sc.title, 'idea': sc.idea, 'format': sc.format, 'language': sc.language,
+            'duration': sc.duration, 'genre': sc.genre, 'style': sc.style, 'audience': sc.audience, 'status': sc.status,
+            'error': sc.error, 'data': sc.data, 'job': _live_info(job)}
+
+
+@require_GET
+def script_api(request, pk):
+    return JsonResponse(_script_json(get_object_or_404(Script, pk=pk)))
+
+
+def _script_busy():
+    return JsonResponse({'error': 'Сценарий уже генерируется — дождитесь окончания.'}, status=409)
+
+
+@require_POST
+def script_generate(request, pk):
+    """Regenerate the whole script (optionally with new settings)."""
+    from . import scripts as sg
+    sc = get_object_or_404(Script, pk=pk)
+    if sc.status == 'generating':
+        return _script_busy()
+    data = _json_body(request)
+    st = sg.settings_of(dict(sg.settings_of(sc), **{k: v for k, v in data.items() if k in
+                                                   ('idea', 'format', 'language', 'duration', 'genre', 'style',
+                                                    'audience', 'title')}))
+    for k in ('idea', 'format', 'language', 'duration', 'genre', 'style', 'audience', 'title'):
+        setattr(sc, k, st[k])
+    sc.status = 'generating'
+    sc.save()
+    jobs.submit('script', title=f'Сценарий: {sc.title or sc.idea[:60]}', script_id=sc.pk, action='full')
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def script_scene(request, pk, sid, action=None):
+    """POST .../scenes/<sid>/ {changes}: manual edit. POST .../scenes/<sid>/regenerate/ {instruction}: new version."""
+    from . import scripts as sg
+    sc = get_object_or_404(Script, pk=pk)
+    if sc.status == 'generating':
+        return _script_busy()
+    if not any(s['id'] == sid for s in (sc.data or {}).get('scenes', [])):
+        raise Http404
+    data = _json_body(request)
+    if action == 'regenerate':
+        sc.status = 'generating'
+        sc.save(update_fields=['status', 'updated_at'])
+        jobs.submit('script', title=f'Сцена сценария #{sc.pk}', script_id=sc.pk, action='scene', scene_id=sid,
+                    instruction=str(data.get('instruction', ''))[:500])
+        return JsonResponse({'ok': True})
+    sc.data = sg.edit_scene(sc.data, sid, data)
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True, 'data': sc.data})
+
+
+@require_GET
+def script_export(request, pk, what):
+    """JSON of the script document ('script') or its Timeline IR ('timeline') - the input of the next stages."""
+    from . import scripts as sg
+    from .timeline import to_json
+    sc = get_object_or_404(Script, pk=pk)
+    if not (sc.data or {}).get('scenes'):
+        return JsonResponse({'error': 'Сценарий ещё не готов.'}, status=400)
+    if what == 'timeline':
+        body = to_json(sg.to_timeline(sc.data, sc.pk), indent=2)
+    else:
+        body = json.dumps(sc.data, ensure_ascii=False, indent=2)
+    resp = HttpResponse(body, content_type='application/json; charset=utf-8')
+    resp['Content-Disposition'] = f'attachment; filename="script_{sc.pk}_{what}.json"'
+    return resp

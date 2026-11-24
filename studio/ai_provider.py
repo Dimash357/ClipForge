@@ -89,8 +89,15 @@ def extract_json(text):
     return json.loads(m.group(0))
 
 
-def complete_json(system, user, temperature=0.8, post=None):
-    """Ask the configured model for a JSON object. Returns (dict, 'kind:model') or (None, reason). Never raises."""
+def is_local():
+    """True when the configured model runs on this computer (Ollama, LM Studio...): it uses our GPU."""
+    c = config()
+    return c['kind'] == 'ollama' or bool(c['kind'] and re.search(r'//(127\.0\.0\.1|localhost|\[::1\])', c['url'] or ''))
+
+
+def complete_json(system, user, temperature=0.8, post=None, timeout=None):
+    """Ask the configured model for a JSON object. Returns (dict, 'kind:model') or (None, reason). Never raises.
+    timeout: seconds for this request (long answers such as scripts), default CLIPFORGE_AI_TIMEOUT."""
     c = config()
     if not c['kind']:
         return None, c.get('reason', 'off')
@@ -99,7 +106,7 @@ def complete_json(system, user, temperature=0.8, post=None):
     if post is None:
         import requests
         post = requests.post
-    to = (3.05, _timeout())
+    to = (3.05, float(timeout) if timeout else _timeout())
     try:
         if c['kind'] == 'openai':
             headers = {'Content-Type': 'application/json'}
