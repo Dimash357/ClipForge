@@ -44,6 +44,8 @@ DEFAULTS = {
     'highlight_sound_ai': True, 'caption_font': 'style', 'caption_censor': False,
     # v6 (2A): Hook Engine - off | suggest (analyse, show variants) | auto (also apply the recommended one)
     'hook_engine': 'suggest',
+    # v6 (2B): Smart Editing - off | natural | dynamic | aggressive (cuts pauses / repeats / dull parts)
+    'smart_edit': 'off',
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
@@ -53,6 +55,7 @@ CHOICES = {
     'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'}, 'loudness': {'stream', 'off'},
     'caption_font': {'style', 'Montserrat', 'Arial Black', 'Arial', 'Impact'},
     'hook_engine': {'off', 'suggest', 'auto'},
+    'smart_edit': {'off', 'natural', 'dynamic', 'aggressive'},
 }
 LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',

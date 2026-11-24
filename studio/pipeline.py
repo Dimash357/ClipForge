@@ -993,38 +993,56 @@ def _find_hooks(p, clips, segments, source, vinfo, opts, rep):
         log.exception('hook engine failed; clips keep their start')
 
 
-def _teaser_seconds(c):
-    h = (c.render_info or {}).get('hook') or {}
-    return float(h['teaser'][1] - h['teaser'][0]) if h.get('teaser') and not h.get('error') else 0.0
+def smart_edit_mode(p, c):
+    """Smart Editing mode of a clip: its own choice (manual control) or the project option."""
+    e = (c.meta or {}).get('edit') or {}
+    return e.get('mode') or exports.resolve(p.options, (c.render_info or {}).get('opts')).get('smart_edit', 'off')
 
 
-def _apply_teaser(p, c, plan, cfg, vinfo, info, segments, dest, temp, rep):
-    """Selected teaser variant: clip timeline (Timeline IR) + the teaser in front, rendered by the timeline
-    renderer into `dest`. Any problem keeps the clip as it was rendered and is noted in render_info."""
-    from . import hooks
+def _edit_plan(p, c, segments, sig=None):
+    """Smart Editing plan for the clip's current range (stored in meta['edit'] with the manual choices)."""
+    from . import hooks, smartedit
+    mode = smart_edit_mode(p, c)
+    e = dict((c.meta or {}).get('edit') or {})
+    if mode == 'off' or mode not in smartedit.MODES:
+        return None
+    sig = sig or hooks.load_signals(p, segments)
+    pl = smartedit.plan(sig, c.start, c.end, mode, p.clip_min, restore=set(e.get('restore') or []))
+    e.update(plan=pl)
+    c.meta = dict(c.meta or {}, edit=e)
+    Clip.objects.filter(pk=c.pk).update(meta=c.meta)
+    return pl
+
+
+def _clip_edits(p, c, cfg, segments):
+    """What the timeline path must change in this clip: Smart Editing cuts and/or the chosen Hook teaser.
+    -> {'transform': fn(Timeline) -> Timeline, 'info': {...}} or None (classic render, as before)."""
+    from . import hooks, smartedit, textutil
+    pl = _edit_plan(p, c, segments)
+    edit_on = bool(pl and len(pl['keep']) > 1 or pl and pl['keep'][0] != list(pl['clip']))
+    pl = pl if edit_on else None
     h = (c.meta or {}).get('hooks') or {}
     v = hooks.variant(h, h.get('selected'))
-    if not v or v['kind'] != 'teaser' or not (c.start - 0.05 <= v['teaser'][0] and v['teaser'][1] <= c.end + 0.05):
-        info.pop('hook', None)
-        return
-    try:
-        from .timeline import from_dict, renderer
-        from .timeline.serialize import to_dict
-        snap = info.get('timeline') or _timeline_snapshot(p, c, plan, cfg['opts'], vinfo, info, segments)
-        tl = hooks.prepend_teaser(from_dict(snap), v['teaser'], c.start)
-        out = Path(temp) / 'hooked.mp4'
-        r = renderer.render(tl, out, renderer.RenderSettings(quality=cfg['opts']['quality'],
-                                                             encoder=cfg['opts']['encoder'], workdir=Path(temp) / 'hk'),
-                            cancel=rep.cancelled)
-        os.replace(out, dest)
-        info['timeline'] = to_dict(tl)
-        info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'teaser': v['teaser'], 'score': v['score'],
-                        'renderer': 'timeline', 'seconds': r.get('seconds')}
-    except JobCancelled:
-        raise
-    except Exception as exc:
-        log.warning('teaser for clip %s failed (%s); clip kept without it', c.pk, str(exc)[:300])
-        info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'error': str(exc)[:300]}
+    teaser = v['teaser'] if v and v['kind'] == 'teaser' and c.start - 0.05 <= v['teaser'][0] and \
+        v['teaser'][1] <= c.end + 0.05 else None
+    if not pl and not teaser:
+        return None
+    info = {}
+    if pl:
+        info['edit'] = {'mode': pl['mode'], 'removed': pl['stats']['removed'], 'cuts': pl['stats']['cuts'],
+                        'by_reason': pl['stats']['by_reason']}
+    if teaser:
+        info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'teaser': teaser, 'score': v['score'],
+                        'renderer': 'timeline'}
+    words = [w for w in textutil.flat_words(segments or []) if teaser and w['end'] > teaser[0] and w['start'] < teaser[1]]
+
+    def transform(tl):
+        if pl:
+            tl = smartedit.to_timeline(tl, pl, c.start, pl['mode'])
+        if teaser:
+            tl = hooks.prepend_teaser(tl, teaser, c.start, src_words=words if pl else None)
+        return tl
+    return {'transform': transform, 'info': info}
 
 
 def _resumed_clips(p, rep):
@@ -1137,11 +1155,14 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         try:
             keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
             keep_hooks = (c.meta or {}).get('hooks')         # so are the Hook Engine's variants and the choice
+            keep_edit = (c.meta or {}).get('edit')           # and the Smart Editing mode / manual choices
             c.meta = metadata.generate(c.text or clip_text(segments, c.start, c.end), scene_types=types)
             if keep:
                 c.meta['short'] = keep
             if keep_hooks:
                 c.meta['hooks'] = keep_hooks
+            if keep_edit:
+                c.meta['edit'] = keep_edit
             if c.meta.get('titles'):
                 c.title = c.meta['titles'][0][:240]
         except Exception:
@@ -1165,8 +1186,12 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             clip = {'start': c.start, 'end': c.end}
             progress = (lambda f, i=i: rep.frac((i + f) / n, f'Рендер клипа {i + 1} из {n}: {int(f * 100)}%'))
             info = None
-            if getattr(settings, 'TIMELINE_RENDERER', False):          # experimental, off by default
-                info = _timeline_render(p, c, plans[c.pk], cfg, vinfo, segments, dest, temp, rep, progress)
+            edits = _clip_edits(p, c, cfg, segments)               # Smart Editing (2B) / Hook teaser (2A)
+            if edits or getattr(settings, 'TIMELINE_RENDERER', False):  # timeline path: edits, or the experiment
+                info = _timeline_render(p, c, plans[c.pk], cfg, vinfo, segments, dest, temp, rep, progress,
+                                        transform=edits and edits['transform'])
+                if info is not None and edits:
+                    info.update(edits['info'])
             try:
                 if info is None:
                     info = editor.render(source, clip, segments, dest, temp, cfg['opts'], plans[c.pk], vinfo, cfg['mode'],
@@ -1185,8 +1210,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                     c.status, c.error = 'error', str(exc2)[-1500:]
                     c.save(update_fields=['status', 'error', 'updated_at'])
                     continue
-            if not info.get('fallback_renderer'):
-                _apply_teaser(p, c, plans[c.pk], cfg, vinfo, info, segments, dest, temp, rep)
+            if edits and info.get('renderer') != 'timeline':           # edits failed: plain clip, say why
+                info['edit_error'] = 'монтаж/тизер не применён (ошибка рендера, подробности в логе); клип без изменений'
             old_video, old_poster = c.video.name, c.poster.name
             stamp = int(time.time())
             with dest.open('rb') as f:
@@ -1217,7 +1242,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                 copts = per[c.pk]['opts'] if c.pk in per else base_opts
                 expect = {'size': exports.dims(copts), 'fps': int(copts['fps']) if copts['fps'] != 'source' else None,
                           'lufs': (exports.LOUDNESS.get(copts.get('loudness')) or {}).get('I')}
-                c.quality = quality.validate_clip(c.video.path, c.end - c.start + _teaser_seconds(c), source_has_audio=vinfo['has_audio'],
+                c.quality = quality.validate_clip(c.video.path, (c.render_info or {}).get('output_duration') or c.end - c.start,
+                                                  source_has_audio=vinfo['has_audio'],
                                                   caption_report=cr, text=c.text, siblings=sibs,
                                                   clip_min=p.clip_min, clip_max=p.clip_max, span=(c.start, c.end),
                                                   expect=None if (c.render_info or {}).get('fallback_renderer') else expect)
@@ -1255,7 +1281,7 @@ def _timeline_snapshot(p, c, plan, opts, vinfo, info, segments):
         return None
 
 
-def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progress):
+def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progress, transform=None):
     """Experimental path (settings.TIMELINE_RENDERER): plan -> Timeline IR -> timeline renderer.
     -> render_info dict, or None when anything goes wrong (the caller then renders with the classic renderer)."""
     opts = cfg['opts']
@@ -1273,6 +1299,8 @@ def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progr
         tl = adapters.clip_timeline(project_id=p.pk, clip_id=c.pk, source_name=p.source.name,
                                     fingerprint=p.source_fingerprint, clip_start=c.start, clip_end=c.end, plan=plan,
                                     opts=opts, vinfo=vinfo, render_info=pre, transcript=segments, title=c.title)
+        if transform is not None:
+            tl = transform(tl)
         r = renderer.render(tl, dest, renderer.RenderSettings(quality=opts['quality'], encoder=opts['encoder'],
                                                               workdir=Path(temp) / 'tl'),
                             on_progress=on_progress, cancel=rep.cancelled)
@@ -1292,8 +1320,8 @@ def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progr
             'loudness': ({k: v for k, v in loud[0].items() if k != 'item'} if loud else pre['loudness']),
             'auto': plan.get('auto'), 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
                                                                  for k, v in plan['cam'].items()},
-            'timeline': to_dict(tl), 'timeline_render': {k: r[k] for k in ('scenes', 'seconds', 'rendered_scenes',
-                                                                           'timeline_hash', 'version')}}
+            'timeline': to_dict(tl), 'output_duration': tl.duration,
+            'timeline_render': {k: r[k] for k in ('scenes', 'seconds', 'rendered_scenes', 'timeline_hash', 'version')}}
 
 
 def _short_meta(p, ok_ids, rep):

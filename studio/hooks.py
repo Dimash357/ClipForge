@@ -334,7 +334,7 @@ def candidate_windows(segments, clips, clip_min, clip_max):
 
 
 # ------------------------------------------------------------------ applying a teaser through Timeline IR
-def prepend_teaser(tl, teaser, clip_start):
+def prepend_teaser(tl, teaser, clip_start, src_words=None):
     """A new Timeline: the teaser [a, b] (source seconds, inside the clip) plays first, then the whole clip.
     Picture uses the layout of the scene the teaser comes from, the sound and captions of that moment come along."""
     from .timeline import model as m
@@ -346,8 +346,11 @@ def prepend_teaser(tl, teaser, clip_start):
     out = copy.deepcopy(tl)
     src_item = next((it for t in out.tracks if t.type == 'video' for it in t.items
                      if it.type == 'video' and it.src_in <= a + 1e-3 < it.src_in + it.duration), None)
-    if src_item is None:
-        raise ValueError('teaser is outside the clip picture')
+    if src_item is None:                            # e.g. that moment was cut by Smart Editing: nearest shot
+        vids = [it for t in out.tracks if t.type == 'video' for it in t.items if it.type == 'video']
+        if not vids:
+            raise ValueError('teaser is outside the clip picture')
+        src_item = min(vids, key=lambda it: min(abs(it.src_in - a), abs(it.src_in + it.duration - a)))
     for sc in out.scenes:
         sc.start = round(sc.start + D, 3)
     for t in out.tracks:
@@ -373,9 +376,13 @@ def prepend_teaser(tl, teaser, clip_start):
         if t.type == 'caption':
             cap = next((it for it in t.items if it.type == 'caption'), None)
             if cap is not None:
-                words = [m.Word(t0=round(max(0.0, w.t0 - D - rel), 3), t1=round(min(D, w.t1 - D - rel), 3),
-                                text=w.text, emphasis=w.emphasis, speaker=w.speaker)
-                         for w in cap.words if w.t0 - D >= rel - 0.05 and w.t1 - D <= rel + D + 0.05]
+                if src_words is not None:           # source-time words of the teaser (edited clips)
+                    words = [m.Word(t0=round(max(0.0, w['start'] - a), 3), t1=round(min(D, w['end'] - a), 3),
+                                    text=w['text']) for w in src_words if w['start'] >= a - 0.05 and w['end'] <= b + 0.05]
+                else:
+                    words = [m.Word(t0=round(max(0.0, w.t0 - D - rel), 3), t1=round(min(D, w.t1 - D - rel), 3),
+                                    text=w.text, emphasis=w.emphasis, speaker=w.speaker)
+                             for w in cap.words if w.t0 - D >= rel - 0.05 and w.t1 - D <= rel + D + 0.05]
                 words = [w for w in words if w.t1 > w.t0]
                 if words:
                     t.items.insert(0, m.CaptionItem(id=stable_id('it', 'hook', tl.id, 'c', a), start=0.0, duration=D,

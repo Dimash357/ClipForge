@@ -21,6 +21,7 @@ urlpatterns = [
     path('api/clips/<int:pk>/rerender/', views.rerender_clip, name='rerender_clip'),
     path('api/clips/<int:pk>/short-meta/', views.clip_short_meta, name='clip_short_meta'),
     path('api/clips/<int:pk>/hooks/', views.clip_hooks, name='clip_hooks'),
+    path('api/clips/<int:pk>/edit/', views.clip_edit, name='clip_edit'),
     path('api/system/recheck/', views.system_recheck, name='system_recheck'),
     path('api/youtube/metadata/', views.metadata, name='metadata'),
     path('api/youtube/source-check/', views.source_check, name='source_check'),

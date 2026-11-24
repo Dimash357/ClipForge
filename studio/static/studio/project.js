@@ -151,6 +151,7 @@ function clipCard(c) {
     h('h3', {text: c.title})];
   if (c.status === 'ready') kids.push(shortMeta(c));
   if (meta.hooks || c.status === 'ready') kids.push(hookBox(c));
+  if (c.status === 'ready' || meta.edit) kids.push(editBox(c));
   if (c.error) kids.push(h('div', {class: 'error', text: c.error}));
   for (const n of (c.notes || [])) kids.push(h('div', {class: 'notice', text: 'ℹ ' + n}));
   const tl = timeline(c); if (tl) kids.push(tl);
@@ -224,6 +225,74 @@ function hookBox(c) {
   return box;
 }
 
+// ---------------------------------------------------------------- Smart Editing (2B)
+const EDIT_REASON = {pause: 'пауза', silence: 'тишина', repeat: 'повтор', filler: 'запинка', boring: 'неинтересно'};
+function editBox(c) {
+  const e = (c.meta || {}).edit || {};
+  const applied = e.mode || null;
+  const st = e.plan && e.mode && e.mode !== 'off' ? e.plan.stats : null;
+  const box = h('details', {class: 'hookbox'});
+  box.append(h('summary', {text: 'Монтаж: ' + (st ? `${e.plan.mode} · −${st.removed.toFixed(1)} с (${st.original.toFixed(0)} → ${st.result.toFixed(0)} с)` : 'оригинал')}));
+  const body = h('div');
+  const err = h('div', {class: 'error', style: 'display:none'});
+  const player = h('video', {controls: true, preload: 'none', style: 'display:none;width:100%;max-height:220px;margin:6px 0'});
+  let cur = null, restore = new Set(e.restore || []);
+  const load = async (mode) => {
+    const r = await fetch(`/api/clips/${c.id}/edit/?mode=${mode}&restore=${encodeURIComponent([...restore].join(','))}`); const d = await r.json();
+    if (!r.ok) { err.style.display = 'block'; err.textContent = d.error || 'Не удалось'; return; }
+    cur = d; draw();
+  };
+  const preview = () => {
+    if (!cur) return;
+    const keep = cur.plan ? cur.plan.keep : [[c.start, c.end]];
+    player.style.display = ''; player.src = `${data.source_url}#t=${keep[0][0]}`;
+    player.ontimeupdate = () => {
+      const t = player.currentTime;
+      const k = keep.findIndex(r => t < r[1] - 0.03);
+      if (k < 0) { player.pause(); return; }
+      if (t < keep[k][0] - 0.05) player.currentTime = keep[k][0];          // jump over what is cut
+    };
+    player.play().catch(() => {});
+  };
+  const apply = async (mode) => {
+    const r = await post(`/api/clips/${c.id}/edit/`, {mode, restore: [...restore]});
+    if (!r.ok) { err.style.display = 'block'; err.textContent = (await r.json()).error || 'Не удалось'; return; }
+    poll();
+  };
+  function draw() {
+    body.replaceChildren();
+    const modes = h('div', {class: 'row'});
+    for (const [k, m] of Object.entries(cur.modes)) modes.append(h('button', {type: 'button', class: 'sm' + (k === cur.mode ? ' primary' : ''), title: m.note, text: m.label, onclick: () => load(k)}));
+    body.append(modes);
+    if (cur.plan) {
+      const s = cur.plan.stats; const L = s.original || 1;
+      const bar = h('div', {class: 'editbar'});
+      let pos = cur.plan.clip[0];
+      for (const [a, b] of cur.plan.keep) {
+        if (a > pos) bar.append(h('i', {class: 'cut', style: `width:${100 * (a - pos) / L}%`}));
+        bar.append(h('i', {class: 'keep', style: `width:${100 * (b - a) / L}%`})); pos = b;
+      }
+      if (pos < cur.plan.clip[1]) bar.append(h('i', {class: 'cut', style: `width:${100 * (cur.plan.clip[1] - pos) / L}%`}));
+      body.append(bar, h('small', {class: 'muted', text: `${s.original.toFixed(1)} → ${s.result.toFixed(1)} с, вырезано ${s.removed.toFixed(1)} с: ` +
+        (Object.entries(s.by_reason).map(([k, v]) => `${EDIT_REASON[k]} ${v.toFixed(1)} с`).join(', ') || 'ничего')}));
+      const list = h('div', {class: 'editcuts'});
+      for (const x of cur.plan.cuts) {
+        const cb = h('input', {type: 'checkbox'}); cb.checked = x.applied !== false && !restore.has(x.id);
+        cb.disabled = !!x.skipped;
+        cb.onchange = () => { if (cb.checked) restore.delete(x.id); else restore.add(x.id); load(cur.mode); };
+        list.append(h('label', {class: 'hint', title: x.skipped || ''}, cb, ` ${x.start.toFixed(1)}–${x.end.toFixed(1)} с · ${EDIT_REASON[x.reason]} · ${x.seconds.toFixed(1)} с` + (x.skipped ? ` (${x.skipped})` : '')));
+      }
+      if (cur.plan.cuts.length) body.append(h('details', {}, h('summary', {class: 'hint', text: `Вырезки (${cur.plan.cuts.length}) — снимите галочку, чтобы оставить`}), list));
+    }
+    body.append(h('div', {class: 'row'}, h('button', {type: 'button', class: 'sm', text: '▶ Предпросмотр', onclick: preview}),
+      h('button', {type: 'button', class: 'sm primary', text: cur.mode === 'off' ? '↺ Вернуть оригинал' : 'Применить и перемонтировать', onclick: () => apply(cur.mode)})),
+      applied ? h('small', {class: 'muted', text: `Сейчас в клипе: ${applied === 'off' ? 'оригинал' : applied}`}) : null);
+  }
+  box.addEventListener('toggle', () => { if (box.open && !cur) load(applied || 'dynamic'); });
+  box.append(body, player, err);
+  return box;
+}
+
 function shortMeta(c) {
   const s = c.short;
   const box = h('div', {class: 'shortmeta'});
@@ -259,7 +328,7 @@ function renderClips(d) {
   const ids = new Set(list.map(c => c.id));
   for (const [id, v] of cards) if (!ids.has(id)) { v.el.remove(); cards.delete(id); }
   for (const c of list) {
-    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, (c.meta || {}).hooks && [(c.meta.hooks.variants || []).length, c.meta.hooks.selected, c.meta.hooks.recommended], c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
+    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, (c.meta || {}).hooks && [(c.meta.hooks.variants || []).length, c.meta.hooks.selected, c.meta.hooks.recommended], (c.meta || {}).edit && [c.meta.edit.mode, (c.meta.edit.restore || []).length, c.meta.edit.plan && c.meta.edit.plan.stats.removed], c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
     const cur = cards.get(c.id);
     if (cur && cur.sig === sig) continue;
     const el = clipCard(c);

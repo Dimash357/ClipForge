@@ -27,7 +27,7 @@ OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'capti
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
                  'highlight_audio', 'highlight_motion', 'loudness', 'streamer', 'highlight_sound_ai', 'caption_font',
-                 'caption_censor')
+                 'caption_censor', 'hook_engine', 'smart_edit')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
               'highlight_motion', 'highlight_sound_ai', 'caption_censor')
 
@@ -576,3 +576,45 @@ def clip_hooks(request, pk):
     if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], bounds={str(clip.pk): [v['start'], v['end']]}, hook=True):
         return _busy(p.pk)
     return JsonResponse({'ok': True, 'selected': h['selected']})
+
+
+# ---------------------------------------------------------------- Smart Editing (2B)
+@require_http_methods(['GET', 'POST'])
+def clip_edit(request, pk):
+    """GET ?mode=: the cut plan for the clip (preview, nothing changes). POST {mode, restore: [cut ids]}: apply
+    (or mode 'off' = back to the original) -> the clip is re-rendered in the queue."""
+    from . import hooks, pipeline as pl, smartedit
+    clip = get_object_or_404(Clip, pk=pk)
+    p = clip.project
+    if not p.transcript:
+        return JsonResponse({'error': 'Нет транскрипта — обработайте проект.'}, status=400)
+    if request.method == 'GET':
+        mode = request.GET.get('mode') or pl.smart_edit_mode(p, clip)
+        e = (clip.meta or {}).get('edit') or {}
+        if mode == 'off':
+            return JsonResponse({'mode': 'off', 'plan': None, 'modes': _edit_modes(), 'source_url': _file_url(p.source)})
+        if mode not in smartedit.MODES:
+            return JsonResponse({'error': 'Неизвестный режим.'}, status=400)
+        rq = request.GET.get('restore')
+        restore = set(filter(None, rq.split(','))) if rq is not None else set(e.get('restore') or [])
+        plan = smartedit.plan(hooks.load_signals(p), clip.start, clip.end, mode, p.clip_min, restore=restore)
+        return JsonResponse({'mode': mode, 'plan': plan, 'modes': _edit_modes(), 'applied': e.get('mode'),
+                             'source_url': _file_url(p.source)})
+    data = _json_body(request)
+    mode = data.get('mode')
+    if mode != 'off' and mode not in smartedit.MODES:
+        return JsonResponse({'error': 'Неизвестный режим.'}, status=400)
+    if jobs.is_active(p.pk):
+        return _busy(p.pk)
+    restore = [str(x) for x in (data.get('restore') or [])][:200]
+    clip.meta = dict(clip.meta or {}, edit={'mode': mode, 'restore': restore})
+    clip.save(update_fields=['meta', 'updated_at'])
+    if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], hook=True):
+        return _busy(p.pk)
+    return JsonResponse({'ok': True, 'mode': mode})
+
+
+def _edit_modes():
+    from . import smartedit
+    return {'off': {'label': 'Оригинал', 'note': 'без вырезок'},
+            **{k: {'label': v['label'], 'note': v['note']} for k, v in smartedit.MODES.items()}}

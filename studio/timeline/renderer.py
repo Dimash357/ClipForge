@@ -246,14 +246,21 @@ def _final(tl, dest, windows, clips, paths, media, encoder, workdir, settings, o
     sources = C.audio_sources(tl, paths, media)
     items = {it.id: it for _, it in tl.items()}
     loud = []
+    measured = {}                 # pieces of one cut-up clip share one measurement (same gain everywhere)
     for s in sources:
-        target = ((getattr(items[s.item_id], 'ext', None) or {}).get('clipforge.loudness') or {}).get('target')
+        lext = (getattr(items[s.item_id], 'ext', None) or {}).get('clipforge.loudness') or {}
+        target = lext.get('target')
         if target is None:
             continue
         spec = next((v for v in exports.LOUDNESS.values() if v['I'] == float(target)),
                     {'I': float(target), 'TP': -1.5, 'LRA': 11.0})
         base = f"loudnorm=I={spec['I']:g}:TP={spec['TP']:g}:LRA={spec['LRA']:g}"
-        meas = measure_loudness(s.path, s.src_in, s.duration, cancel=cancel) if settings.loudness_measure else None
+        rng = lext.get('measure') or [s.src_in, s.src_in + s.duration]
+        key = (str(s.path), round(float(rng[0]), 3), round(float(rng[1]), 3))
+        if key not in measured:
+            measured[key] = measure_loudness(s.path, key[1], key[2] - key[1], cancel=cancel) \
+                if settings.loudness_measure else None
+        meas = measured[key]
         if meas:
             s.loudnorm = (f"{base}:measured_I={meas['input_i']:.2f}:measured_TP={meas['input_tp']:.2f}:"
                           f"measured_LRA={meas['input_lra']:.2f}:measured_thresh={meas['input_thresh']:.2f}:"
