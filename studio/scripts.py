@@ -351,7 +351,7 @@ def edit_scene(doc, scene_id, changes):
 
 
 # ------------------------------------------------------------------ Timeline IR
-def to_timeline(doc, script_id=None):
+def to_timeline(doc, script_id=None, storyboard=True):
     """The script as a Timeline IR (no media yet): scenes with timings and generation prompts, characters, the
     spoken text as caption words (evenly timed until a voice exists), on-screen text as overlay items.
     The storyboard (3B) and voice stages fill in assets scene by scene."""
@@ -397,4 +397,8 @@ def to_timeline(doc, script_id=None):
                     characters=chars, meta={'title': doc['title'], 'source': 'script', 'script_id': script_id,
                                             'format': doc['format'], 'language': doc['language']},
                     ext={'clipforge.script': {'version': doc['version'], 'provider': doc['provider']}})
-    return ensure_valid(tl)
+    tl = ensure_valid(tl)
+    if storyboard and doc.get('storyboard'):
+        from .storyboard import apply_to_timeline
+        tl = apply_to_timeline(tl, doc)
+    return tl

@@ -892,3 +892,74 @@ def script_export(request, pk, what):
     resp = HttpResponse(body, content_type='application/json; charset=utf-8')
     resp['Content-Disposition'] = f'attachment; filename="script_{sc.pk}_{what}.json"'
     return resp
+
+
+# ---------------------------------------------------------------- AI Storyboard (3B)
+@ensure_csrf_cookie
+def storyboard_page(request, pk):
+    from . import storyboard as sb
+    sc = get_object_or_404(Script, pk=pk)
+    return render(request, 'studio/storyboard.html', {'script': sc, 'shots': sb.SHOTS, 'moves': sb.MOVES,
+                                                      'comps': sb.COMPOSITIONS})
+
+
+@require_http_methods(['GET', 'POST'])
+def storyboard_api(request, pk):
+    """GET: the storyboard + stale scenes. POST {scenes?: [ids]}: (re)build it in the queue (locked frames kept)."""
+    from . import storyboard as sb
+    sc = get_object_or_404(Script, pk=pk)
+    if request.method == 'GET':
+        d = _script_json(sc)
+        d['stale'] = sb.mark_stale(sc.data) if (sc.data or {}).get('scenes') else []
+        return JsonResponse(d)
+    if sc.status == 'generating':
+        return _script_busy()
+    if not (sc.data or {}).get('scenes'):
+        return JsonResponse({'error': 'Сначала нужен готовый сценарий.'}, status=400)
+    scenes = [x for x in (_json_body(request).get('scenes') or []) if isinstance(x, str)]
+    sc.status = 'generating'
+    sc.save(update_fields=['status', 'updated_at'])
+    jobs.submit('script', title=f'Раскадровка: {sc.title or sc.idea[:60]}', script_id=sc.pk, action='storyboard',
+                scenes=scenes)
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def storyboard_frame(request, pk, fid, action=None):
+    """.../frames/<fid>/ {changes}: edit; .../move/ {to}: reorder; .../regenerate/ {instruction}: new version."""
+    from . import storyboard as sb
+    sc = get_object_or_404(Script, pk=pk)
+    if sc.status == 'generating':
+        return _script_busy()
+    if not (sc.data or {}).get('storyboard'):
+        return JsonResponse({'error': 'Раскадровки ещё нет.'}, status=400)
+    data = _json_body(request)
+    try:
+        if action == 'regenerate':
+            sb._find(sc.data, fid)
+            sc.status = 'generating'
+            sc.save(update_fields=['status', 'updated_at'])
+            jobs.submit('script', title=f'Кадр раскадровки #{sc.pk}', script_id=sc.pk, action='frame', frame_id=fid,
+                        instruction=str(data.get('instruction', ''))[:500])
+            return JsonResponse({'ok': True})
+        sc.data = sb.move_frame(sc.data, fid, data.get('to', 0)) if action == 'move' else \
+            sb.edit_frame(sc.data, fid, data)
+    except KeyError:
+        raise Http404
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def storyboard_bible(request, pk):
+    """{style: {...}, characters: {id: {...}}} -> prompts of all frames re-composed (hand-written ones kept)."""
+    from . import storyboard as sb
+    sc = get_object_or_404(Script, pk=pk)
+    if sc.status == 'generating':
+        return _script_busy()
+    if not (sc.data or {}).get('storyboard'):
+        return JsonResponse({'error': 'Раскадровки ещё нет.'}, status=400)
+    data = _json_body(request)
+    sc.data = sb.edit_bibles(sc.data, data.get('style'), data.get('characters'))
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True})

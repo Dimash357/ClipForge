@@ -165,7 +165,17 @@ def _script_job(job, rep):
     from .models import Script
     sc = Script.objects.get(pk=job.payload['script_id'])
     try:
-        if job.payload.get('action') == 'scene':
+        if job.payload.get('action') == 'storyboard':
+            from . import storyboard
+            rep.stage('scenes', 'Раскадровка: библии стиля и персонажей, кадры по сценам...')
+            only = job.payload.get('scenes')
+            doc = storyboard.build(sc.data, cancel=rep.cancelled, only=set(only) if only else None)
+        elif job.payload.get('action') == 'frame':
+            from . import storyboard
+            rep.stage('scenes', 'Перерисовываем кадр раскадровки...')
+            doc = storyboard.regenerate_frame(sc.data, job.payload['frame_id'], job.payload.get('instruction', ''),
+                                              cancel=rep.cancelled)
+        elif job.payload.get('action') == 'scene':
             rep.stage('edit', 'Переписываем сцену...')
             doc = scripts.regenerate_scene(sc.data, job.payload['scene_id'], job.payload.get('instruction', ''),
                                            cancel=rep.cancelled)
