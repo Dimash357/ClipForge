@@ -141,7 +141,23 @@ def _clip_json(c, p):
         'opts': exports.resolve(p.options, info.get('opts')), 'position': c.position,
         'download': c.video.url + '?download=1' if c.video else None,
         'auto': info.get('auto'), 'short': (c.meta or {}).get('short'),
+        'output_duration': info.get('output_duration'), 'width': _clip_dims(info),
+        'history': len((c.meta or {}).get('history') or []), 'edited': bool((c.meta or {}).get('original')),
+        'edit_error': info.get('edit_error'), 'edit_mode': _smart_mode(p, c),
     }
+
+
+def _smart_mode(p, c):
+    from .pipeline import smart_edit_mode
+    return smart_edit_mode(p, c)
+
+
+def _clip_dims(info):
+    try:
+        w, h = (info.get('size') or '').split('x')
+        return [int(w), int(h)]
+    except ValueError:
+        return None
 
 
 def _stage_states(p):
@@ -684,3 +700,97 @@ def clip_viral_apply(request, pk):
     if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], bounds={str(clip.pk): [a, b]}, hook=True):
         return _busy(p.pk)
     return JsonResponse({'ok': True, 'combo': combo})
+
+
+# ---------------------------------------------------------------- Clip Selection Studio (2D)
+@ensure_csrf_cookie
+def clip_studio(request, pk):
+    p = get_object_or_404(Project, pk=pk)
+    jobs.reap(pk)
+    return render(request, 'studio/clipstudio.html', {
+        'project': p, 'edit_modes': exports.EDIT_MODES, 'styles': captions.STYLE_CHOICES,
+        'fonts': sorted(exports.CHOICES['caption_font']), 'opts': exports.resolve(p.options)})
+
+
+@require_POST
+def clip_preview(request, pk):
+    """Draft of the final vertical edit for the given (unsaved) changes -> {'url', 'info'}."""
+    from . import clipstudio
+    c = get_object_or_404(Clip, pk=pk)
+    p = c.project
+    if not p.source or not p.transcript:
+        return JsonResponse({'error': 'Нет исходного видео или транскрипта.'}, status=400)
+    st = clipstudio.clean(_json_body(request), c)
+    try:
+        rel, info = clipstudio.preview(p, c, st)
+    except Exception as exc:
+        import logging
+        logging.getLogger('studio.views').exception('preview failed for clip %s', c.pk)
+        return JsonResponse({'error': f'Не удалось собрать предпросмотр: {str(exc)[:200]}'}, status=500)
+    return JsonResponse({'url': settings.MEDIA_URL + rel, 'info': info, 'state': st})
+
+
+@require_POST
+def project_apply(request, pk):
+    """{clips: [{id, start, end, mode, overrides, hook, edit}]} -> one render job for all of them."""
+    from . import clipstudio
+    p = get_object_or_404(Project, pk=pk)
+    if jobs.is_active(p.pk):
+        return _busy(p.pk)
+    items = []
+    for d in (_json_body(request).get('clips') or [])[:50]:
+        c = Clip.objects.filter(project=p, pk=d.get('id') if isinstance(d, dict) else None).first()
+        if c is not None:
+            items.append((c, clipstudio.clean(d, c)))
+    if not items:
+        return JsonResponse({'error': 'Не выбрано ни одного клипа.'}, status=400)
+    ok, ids = clipstudio.apply(p, items, p.transcript)
+    if not ok:
+        return _busy(p.pk)
+    return JsonResponse({'ok': True, 'clips': ids})
+
+
+@require_POST
+def clip_restore(request, pk):
+    """{to: 'previous' | 'original'}: undo the last applied change, or go back to the original clip."""
+    from . import clipstudio
+    c = get_object_or_404(Clip, pk=pk)
+    p = c.project
+    to = _json_body(request).get('to', 'previous')
+    if to not in ('previous', 'original'):
+        return JsonResponse({'error': 'to: previous | original'}, status=400)
+    if jobs.is_active(p.pk):
+        return _busy(p.pk)
+    target = clipstudio.undo_target(c, to)
+    if target is None:
+        return JsonResponse({'error': 'Нечего отменять.'}, status=400)
+    if to == 'previous':
+        clipstudio.pop_history(c)
+    ok, _ = clipstudio.apply(p, [(c, target)], p.transcript, record=(to == 'original'))
+    if not ok:
+        return _busy(p.pk)
+    return JsonResponse({'ok': True, 'state': target})
+
+
+@require_GET
+def project_export(request, pk):
+    """ZIP of the chosen ready clips with titles, descriptions and hashtags (?ids=1,2,3; empty = all ready)."""
+    from . import clipstudio
+    p = get_object_or_404(Project, pk=pk)
+    raw = request.GET.get('ids', '')
+    ids = [int(x) for x in raw.split(',') if x.strip().isdigit()] or list(
+        p.clips.filter(status='ready').values_list('pk', flat=True))
+    path, skipped = clipstudio.export_zip(p, ids)
+    if not zipfile_has_clips(path):
+        path.unlink(missing_ok=True)
+        return JsonResponse({'error': 'Среди выбранных нет готовых клипов.', 'skipped': skipped}, status=400)
+    resp = FileResponse(open(path, 'rb'), as_attachment=True,
+                        filename=f'{clipstudio._slug(p.title, 40)}_shorts.zip')
+    resp['X-Skipped-Clips'] = ','.join(map(str, skipped))
+    return resp
+
+
+def zipfile_has_clips(path):
+    import zipfile
+    with zipfile.ZipFile(path) as z:
+        return any(n.endswith('.mp4') for n in z.namelist())

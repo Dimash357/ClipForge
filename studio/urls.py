@@ -4,6 +4,11 @@ from . import views
 urlpatterns = [
     path('', views.index, name='index'),
     path('projects/<int:pk>/', views.project, name='project'),
+    path('projects/<int:pk>/studio/', views.clip_studio, name='clip_studio'),
+    path('api/projects/<int:pk>/apply/', views.project_apply, name='project_apply'),
+    path('api/projects/<int:pk>/export/', views.project_export, name='project_export'),
+    path('api/clips/<int:pk>/preview/', views.clip_preview, name='clip_preview'),
+    path('api/clips/<int:pk>/restore/', views.clip_restore, name='clip_restore'),
     path('history/', views.history, name='history'),
     path('system/', views.system, name='system'),
     path('queue/', views.queue, name='queue'),

@@ -1,0 +1,57 @@
+{% extends "studio/base.html" %}
+{% block title %}Clip Studio — {{ project.title }}{% endblock %}
+{% block body %}
+<div class="row" style="justify-content:space-between;margin-bottom:8px">
+  <div><div class="eyebrow">CLIP STUDIO · PROJECT #{{ project.pk }}</div><h1 style="font-size:24px">{{ project.title }}</h1></div>
+  <a class="btn" href="{% url 'project' project.pk %}">← Проект</a>
+</div>
+<div class="panel cs-status" id="cs-status"><span class="muted">Загрузка…</span></div>
+<div class="cs-toolbar">
+  <label class="cs-check"><input type="checkbox" id="cs-all"> все</label>
+  <select id="cs-sort" title="Сортировка">
+    <option value="viral">По Viral Score</option><option value="hook">По Hook Score</option><option value="position">По порядку</option>
+    <option value="duration">По длительности</option><option value="score">По оценке момента</option></select>
+  <select id="cs-filter" title="Фильтр">
+    <option value="all">Все клипы</option><option value="ready">Готовые</option><option value="work">В работе / в очереди</option>
+    <option value="error">С ошибкой</option><option value="unique">Без дублей</option><option value="top">Топ (Viral ≥ 60)</option></select>
+  <input id="cs-search" type="search" placeholder="Поиск по названию и тексту">
+  <span class="cs-spacer"></span>
+  <span class="muted" id="cs-count"></span>
+  <button class="sm" id="cs-compare" disabled>Сравнить</button>
+  <button class="sm" id="cs-best" disabled title="Лучшая комбинация Hook + монтаж для выбранных (Viral Director)">Применить лучшее</button>
+  <button class="sm primary" id="cs-export" disabled>⬇ Экспорт ZIP</button>
+</div>
+<div class="cs-grid" id="cs-grid"></div>
+
+<dialog id="cs-editor" class="cs-editor">
+  <div class="cs-ed-head"><b id="cs-ed-title"></b><span class="cs-spacer"></span><button class="sm" id="cs-ed-close">✕</button></div>
+  <div class="cs-ed-body">
+    <div class="cs-ed-preview">
+      <div class="cs-phone"><video id="cs-ed-video" controls playsinline></video></div>
+      <small class="muted" id="cs-ed-pinfo">Показан текущий рендер.</small>
+      <div class="row"><button class="sm primary" id="cs-ed-preview">▶ Предпросмотр монтажа</button></div>
+    </div>
+    <div class="cs-ed-side">
+      <div class="cs-tabs" id="cs-tabs">
+        <button data-tab="bounds" class="on">Границы</button><button data-tab="hook">Hook</button><button data-tab="edit">Монтаж</button>
+        <button data-tab="layout">Раскладка</button><button data-tab="caps">Субтитры</button></div>
+      <div id="cs-tab" class="cs-tab"></div>
+      <div class="cs-changes" id="cs-changes"></div>
+      <div class="error" id="cs-ed-err" style="display:none"></div>
+      <div class="row cs-ed-actions">
+        <button class="sm" id="cs-ed-undo" title="Отменить последний шаг (до применения)">↶ Шаг назад</button>
+        <button class="sm" id="cs-ed-reset">Сбросить правки</button>
+        <span class="cs-spacer"></span>
+        <button class="sm" id="cs-ed-prev" title="Вернуть версию до последнего применения">⟲ Прошлая версия</button>
+        <button class="sm" id="cs-ed-orig" title="Исходный клип: найденные границы, без Hook и монтажа">⟲ Оригинал</button>
+        <button class="sm primary" id="cs-ed-apply">Применить и перемонтировать</button>
+      </div>
+    </div>
+  </div>
+</dialog>
+
+<dialog id="cs-compare-dlg" class="cs-editor"><div class="cs-ed-head"><b>Сравнение клипов</b><span class="cs-spacer"></span>
+  <button class="sm" onclick="this.closest('dialog').close()">✕</button></div><div id="cs-compare-body" class="cs-compare"></div></dialog>
+{{ edit_modes|json_script:"cs-modes" }}{{ styles|json_script:"cs-styles" }}{{ fonts|json_script:"cs-fonts" }}
+{% endblock %}
+{% block scripts %}<script>window.CF={pid:{{ project.pk }}};</script><script src="/static/studio/live.js"></script><script src="/static/studio/clipstudio.js"></script>{% endblock %}

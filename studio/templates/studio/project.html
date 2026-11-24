@@ -1,7 +1,7 @@
 {% extends "studio/base.html" %}
 {% block title %}ClipForge — {{ project.title }}{% endblock %}
 {% block body %}
-<div class="row" style="justify-content:space-between;margin-bottom:10px"><div><div class="eyebrow">PROJECT #{{ project.pk }}</div><h1 style="font-size:26px">{{ project.title }}</h1></div><span id="statusbadge" class="badge">…</span></div>
+<div class="row" style="justify-content:space-between;margin-bottom:10px"><div><div class="eyebrow">PROJECT #{{ project.pk }}</div><h1 style="font-size:26px">{{ project.title }}</h1></div><div class="row"><a class="btn" href="{% url 'clip_studio' project.pk %}">▦ Clip Studio</a><span id="statusbadge" class="badge">…</span></div></div>
 <div class="panel" id="progresspanel">
 <div class="steps" id="steps">{% for key, label, w in stages %}<div class="step" data-key="{{ key }}"><span class="n">{{ forloop.counter }}</span><b>{{ label }}</b><div class="bar"></div></div>{% endfor %}</div>
 <div class="msg" id="message">Загружаем статус…</div><div class="hint" id="submsg"></div><div id="liveops"></div>

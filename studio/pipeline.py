@@ -1016,17 +1016,14 @@ def _edit_plan(p, c, segments, sig=None):
     return pl
 
 
-def _clip_edits(p, c, cfg, segments):
-    """What the timeline path must change in this clip: Smart Editing cuts and/or the chosen Hook teaser.
-    -> {'transform': fn(Timeline) -> Timeline, 'info': {...}} or None (classic render, as before)."""
+def build_edits(segments, start, end, plan=None, hooks_data=None, selected=None):
+    """Smart Editing plan + Hook teaser for a clip range -> {'transform', 'info'} or None (nothing to change).
+    Shared by the render path and the Studio preview."""
     from . import hooks, smartedit, textutil
-    pl = _edit_plan(p, c, segments)
-    edit_on = bool(pl and len(pl['keep']) > 1 or pl and pl['keep'][0] != list(pl['clip']))
-    pl = pl if edit_on else None
-    h = (c.meta or {}).get('hooks') or {}
-    v = hooks.variant(h, h.get('selected'))
-    teaser = v['teaser'] if v and v['kind'] == 'teaser' and c.start - 0.05 <= v['teaser'][0] and \
-        v['teaser'][1] <= c.end + 0.05 else None
+    pl = plan if plan and (len(plan['keep']) > 1 or plan['keep'][0] != list(plan['clip'])) else None
+    v = hooks.variant(hooks_data or {}, selected)
+    teaser = v['teaser'] if v and v['kind'] == 'teaser' and start - 0.05 <= v['teaser'][0] and \
+        v['teaser'][1] <= end + 0.05 else None
     if not pl and not teaser:
         return None
     info = {}
@@ -1040,11 +1037,18 @@ def _clip_edits(p, c, cfg, segments):
 
     def transform(tl):
         if pl:
-            tl = smartedit.to_timeline(tl, pl, c.start, pl['mode'])
+            tl = smartedit.to_timeline(tl, pl, start, pl['mode'])
         if teaser:
-            tl = hooks.prepend_teaser(tl, teaser, c.start, src_words=words if pl else None)
+            tl = hooks.prepend_teaser(tl, teaser, start, src_words=words if pl else None)
         return tl
     return {'transform': transform, 'info': info}
+
+
+def _clip_edits(p, c, cfg, segments):
+    """What the timeline path must change in this clip: Smart Editing cuts and/or the chosen Hook teaser.
+    -> {'transform': fn(Timeline) -> Timeline, 'info': {...}} or None (classic render, as before)."""
+    h = (c.meta or {}).get('hooks') or {}
+    return build_edits(segments, c.start, c.end, _edit_plan(p, c, segments), h, h.get('selected'))
 
 
 def _viral_director(p, clips, segments, opts, rep, review=False, apply=None):
@@ -1175,6 +1179,9 @@ def _clip_opts(p, clip):
     return exports.resolve(p.options, info.get('opts'))
 
 
+KEEP_META = ('short', 'hooks', 'edit', 'viral', 'history', 'original')
+
+
 def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corner):
     n = len(clips)
     rendered = set((rep.get('rendered') or {}).get('ids', []))       # finished before an interruption: keep them
@@ -1215,19 +1222,10 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
             continue
         types = [s['type'] for s in plans[c.pk]['segments']]
         try:
-            keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
-            keep_hooks = (c.meta or {}).get('hooks')         # so are the Hook Engine's variants and the choice
-            keep_edit = (c.meta or {}).get('edit')           # and the Smart Editing mode / manual choices
-            keep_viral = (c.meta or {}).get('viral')         # and the Viral Director's report
+            # kept across re-edits: Shorts text, Hook variants + choice, Smart Editing, Viral report, Studio history
+            kept_meta = {k: v for k, v in (c.meta or {}).items() if k in KEEP_META and v is not None}
             c.meta = metadata.generate(c.text or clip_text(segments, c.start, c.end), scene_types=types)
-            if keep:
-                c.meta['short'] = keep
-            if keep_hooks:
-                c.meta['hooks'] = keep_hooks
-            if keep_edit:
-                c.meta['edit'] = keep_edit
-            if keep_viral:
-                c.meta['viral'] = keep_viral
+            c.meta.update(kept_meta)
             if c.meta.get('titles'):
                 c.title = c.meta['titles'][0][:240]
         except Exception:
@@ -1346,24 +1344,34 @@ def _timeline_snapshot(p, c, plan, opts, vinfo, info, segments):
         return None
 
 
+def clip_ir(p, c, plan, cfg, vinfo, segments, start=None, end=None):
+    """Timeline IR of a clip as the renderer would build it (also used for Studio previews). -> (tl, pre_info)."""
+    from .timeline import adapters
+    opts = cfg['opts']
+    segs = plan['segments']
+    fps = None
+    if opts['fps'] != 'source' and int(opts['fps']) < vinfo['fps'] - 0.5:
+        fps = int(opts['fps'])
+    target = exports.LOUDNESS.get(opts.get('loudness', 'stream')) if vinfo.get('has_audio', True) else None
+    pre = {'fps': fps or 'source', 'transition': opts['transition'] if len(segs) > 1 else 'none',
+           'mode': cfg['mode'], 'auto': plan.get('auto'), 'notes': plan.get('notes', []),
+           'loudness': {'target': target['I'], 'mode': 'two-pass'} if target else {'target': None}}
+    tl = adapters.clip_timeline(project_id=p.pk, clip_id=c.pk, source_name=p.source.name,
+                                fingerprint=p.source_fingerprint, clip_start=c.start if start is None else start,
+                                clip_end=c.end if end is None else end, plan=plan, opts=opts, vinfo=vinfo,
+                                render_info=pre, transcript=segments, title=c.title)
+    return tl, pre
+
+
 def _timeline_render(p, c, plan, cfg, vinfo, segments, dest, temp, rep, on_progress, transform=None):
     """Experimental path (settings.TIMELINE_RENDERER): plan -> Timeline IR -> timeline renderer.
     -> render_info dict, or None when anything goes wrong (the caller then renders with the classic renderer)."""
     opts = cfg['opts']
     try:
-        from .timeline import adapters, renderer
+        from .timeline import renderer
         from .timeline.serialize import to_dict
         segs = plan['segments']
-        fps = None
-        if opts['fps'] != 'source' and int(opts['fps']) < vinfo['fps'] - 0.5:
-            fps = int(opts['fps'])
-        target = exports.LOUDNESS.get(opts.get('loudness', 'stream')) if vinfo.get('has_audio', True) else None
-        pre = {'fps': fps or 'source', 'transition': opts['transition'] if len(segs) > 1 else 'none',
-               'mode': cfg['mode'], 'auto': plan.get('auto'), 'notes': plan.get('notes', []),
-               'loudness': {'target': target['I'], 'mode': 'two-pass'} if target else {'target': None}}
-        tl = adapters.clip_timeline(project_id=p.pk, clip_id=c.pk, source_name=p.source.name,
-                                    fingerprint=p.source_fingerprint, clip_start=c.start, clip_end=c.end, plan=plan,
-                                    opts=opts, vinfo=vinfo, render_info=pre, transcript=segments, title=c.title)
+        tl, pre = clip_ir(p, c, plan, cfg, vinfo, segments)
         if transform is not None:
             tl = transform(tl)
         r = renderer.render(tl, dest, renderer.RenderSettings(quality=opts['quality'], encoder=opts['encoder'],
