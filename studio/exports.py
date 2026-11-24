@@ -42,6 +42,8 @@ DEFAULTS = {
     'streamer': '',
     # v5.4: sound classifier, caption font and swearing filter
     'highlight_sound_ai': True, 'caption_font': 'style', 'caption_censor': False,
+    # v6 (2A): Hook Engine - off | suggest (analyse, show variants) | auto (also apply the recommended one)
+    'hook_engine': 'suggest',
 }
 CHOICES = {
     'preset': set(PRESETS), 'quality': set(QUALITY), 'fps': {'source', '24', '30', '60'},
@@ -50,6 +52,7 @@ CHOICES = {
     'transition': {'none', 'fade'}, 'cam_position': {'bottom', 'top'}, 'highlight_engine': {'smart', 'classic'},
     'cam_fit': {'full', 'balanced', 'fill'}, 'cam_fill': {'mirror', 'blur'}, 'loudness': {'stream', 'off'},
     'caption_font': {'style', 'Montserrat', 'Arial Black', 'Arial', 'Impact'},
+    'hook_engine': {'off', 'suggest', 'auto'},
 }
 LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',

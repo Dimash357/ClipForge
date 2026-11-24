@@ -150,6 +150,7 @@ function clipCard(c) {
       c.fallback_renderer ? h('span', {class: 'chip q-warn', text: 'резервный рендер v4'}) : null, h('span', {class: 'chip', text: `Score ${c.score}`})),
     h('h3', {text: c.title})];
   if (c.status === 'ready') kids.push(shortMeta(c));
+  if (meta.hooks || c.status === 'ready') kids.push(hookBox(c));
   if (c.error) kids.push(h('div', {class: 'error', text: c.error}));
   for (const n of (c.notes || [])) kids.push(h('div', {class: 'notice', text: 'ℹ ' + n}));
   const tl = timeline(c); if (tl) kids.push(tl);
@@ -176,6 +177,53 @@ function clipCard(c) {
   return h('div', {class: 'clip'}, kids);
 }
 // ---------------------------------------------------------------- Shorts title + description
+// ---------------------------------------------------------------- Hook Engine (2A)
+const HOOK_KIND = {original: 'как есть', start: 'другое начало', teaser: 'тизер в начале'};
+function hookBox(c) {
+  const hk = (c.meta || {}).hooks;
+  const box = h('details', {class: 'hookbox'});
+  const sel = hk && (hk.selected || 'orig');
+  const best = hk && (hk.variants || []).find(v => v.id === hk.recommended);
+  const cur = hk && (hk.variants || []).find(v => v.id === sel);
+  box.append(h('summary', {text: hk ? `Hook: ${Math.round(cur ? cur.score : hk.original)}/100` +
+    (hk.recommended !== sel && best ? ` · есть сильнее: ${Math.round(best.score)}/100 (${HOOK_KIND[best.kind]})` : '') : 'Hook: найти сильное начало'}));
+  const err = h('div', {class: 'error', style: 'display:none'});
+  const player = h('video', {controls: true, preload: 'none', style: 'display:none;width:100%;max-height:220px;margin:6px 0'});
+  const preview = (v) => {
+    const [a, b] = v.kind === 'teaser' ? v.teaser : [v.start, Math.min(v.end, v.start + 4)];
+    player.style.display = ''; player.src = `${data.source_url}#t=${a},${b}`;
+    player.ontimeupdate = () => { if (player.currentTime >= b) player.pause(); };
+    player.play().catch(() => {});
+  };
+  const choose = async (v) => {
+    const r = await post(`/api/clips/${c.id}/hooks/`, {variant: v.id});
+    if (!r.ok) { err.style.display = 'block'; err.textContent = (await r.json()).error || 'Не удалось'; return; }
+    poll();
+  };
+  if (!hk) {
+    box.append(h('button', {type: 'button', class: 'sm', text: 'Найти варианты начала', onclick: async (e) => {
+      e.target.disabled = true; const r = await fetch(`/api/clips/${c.id}/hooks/`);
+      if (!r.ok) { err.style.display = 'block'; err.textContent = (await r.json()).error || 'Не удалось'; e.target.disabled = false; return; }
+      poll(); }}), err);
+    return box;
+  }
+  for (const v of hk.variants) {
+    const where = v.kind === 'teaser' ? `${v.teaser[0].toFixed(1)}–${v.teaser[1].toFixed(1)} с, затем клип` : `с ${v.start.toFixed(1)} с, ${(v.end - v.start).toFixed(0)} с`;
+    const tags = [v.id === hk.recommended ? 'рекомендуем' : null, v.id === sel ? 'выбрано' : null].filter(Boolean).join(', ');
+    box.append(h('div', {class: 'hookvar' + (v.id === sel ? ' on' : '')},
+      h('div', {class: 'row', style: 'justify-content:space-between'},
+        h('b', {text: `${Math.round(v.score)}/100 · ${HOOK_KIND[v.kind]}` + (tags ? ` (${tags})` : '')}), h('small', {class: 'muted', text: where})),
+      h('div', {class: 'livebar'}, h('i', {style: `width:${Math.round(v.score)}%`})),
+      v.text ? h('div', {class: 'hint', text: `«${v.text}»`}) : null,
+      h('small', {class: 'muted', text: `речь ${v.parts.speech}/35 · эмоции ${v.parts.emotion}/25 · динамика ${v.parts.visual}/20 · связность ${v.parts.coherence}/20`}),
+      h('div', {class: 'hint', text: (v.reasons || []).slice(0, 5).map(r => `${r.points > 0 ? '+' : ''}${r.points} ${r.text}`).join(' · ')}),
+      h('div', {class: 'row'}, h('button', {type: 'button', class: 'sm', text: '▶ Предпросмотр', onclick: () => preview(v)}),
+        v.id !== sel ? h('button', {type: 'button', class: 'sm primary', text: 'Выбрать и перемонтировать', onclick: () => choose(v)}) : null)));
+  }
+  box.append(player, err, h('button', {type: 'button', class: 'sm', text: '↻ Пересчитать', onclick: async () => { await fetch(`/api/clips/${c.id}/hooks/?refresh=1`); poll(); }}));
+  return box;
+}
+
 function shortMeta(c) {
   const s = c.short;
   const box = h('div', {class: 'shortmeta'});
@@ -211,7 +259,7 @@ function renderClips(d) {
   const ids = new Set(list.map(c => c.id));
   for (const [id, v] of cards) if (!ids.has(id)) { v.el.remove(); cards.delete(id); }
   for (const c of list) {
-    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
+    const sig = JSON.stringify([c.status, c.url, c.title, c.error, c.quality && c.quality.score, c.poster, (c.meta || {}).titles, (c.meta || {}).hooks && [(c.meta.hooks.variants || []).length, c.meta.hooks.selected, c.meta.hooks.recommended], c.short && c.short.title, c.short && c.short.text, c.auto && c.auto.mode]);
     const cur = cards.get(c.id);
     if (cur && cur.sig === sig) continue;
     const el = clipCard(c);

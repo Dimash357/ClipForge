@@ -662,15 +662,18 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, 
         def motion(spans):
             if rep:
                 rep.frac(0.85, 'Оцениваем динамику геймплея у лучших кандидатов...')
-            return motion_analysis.analyze_spans(
+            mp = motion_analysis.analyze_spans(
                 source, spans, vinfo['width'], vinfo['height'], cancel=cancel,
                 progress=(lambda f: rep.frac(0.85 + 0.15 * f, f'Оцениваем динамику геймплея у лучших кандидатов: '
                                                               f'{int(f * 100)}%')) if rep else None)
+            highlight_signals.last_motion[str(source)] = mp     # reused by the Hook Engine (no second decode)
+            return mp
     highlight_signals.last_screen = screen
     return audio, motion, notes
 
 
 highlight_signals.last_screen = None
+highlight_signals.last_motion = {}           # source path -> MotionProfile (kept per source: jobs may overlap)
 
 
 def _sound_timeline(source, wav, duration, cache, rep, cancel, notes):
@@ -952,12 +955,76 @@ def _run_full_rest(p, pk, rep, payload, opts, source, duration, vinfo, fp, cache
             reason=c.get('reason', ''), scores=dict(c.get('scores') or {}, engine=c.get('engine'),
                                                    auto_bounds=c.get('auto_bounds') or [c['start'], c['end']]),
             title=f'Highlight {i + 1}', status='candidate' if review else 'queued'))
+    _find_hooks(p, clips, segments, source, vinfo, opts, rep)
     rep.checkpoint('clips', ids=[c.pk for c in clips], review=bool(review))
     if review:
         set_state(pk, status='review', stage='', stage_progress=None,
                   message='Фрагменты найдены. Просмотрите, при необходимости поправьте границы и запустите рендер.')
         return
     _render_clips(p, clips, opts, rep, segments, source, vinfo, mode=None, corner=None)
+
+
+def _find_hooks(p, clips, segments, source, vinfo, opts, rep):
+    """Hook Engine (2A): variants of the first seconds for every new clip, from the transcript and the cached
+    audio / sound / screen analysis plus one short motion probe. 'auto' applies the recommended variant."""
+    from . import hooks, resources
+    mode = opts.get('hook_engine', 'suggest')
+    if mode == 'off' or not clips:
+        return
+    rep.frac(0.95, 'Ищем самое цепляющее начало (hook) для каждого клипа...')
+    try:
+        with resources.cpu_lease('Hook Engine', 1):
+            wins = hooks.candidate_windows(segments, [(c.start, c.end) for c in clips], p.clip_min, p.clip_max)
+            sig = hooks.load_signals(p, segments, source, vinfo, wins, cancel=rep.cancelled,
+                                     motion=highlight_signals.last_motion.pop(str(source), None))
+            for c in clips:
+                h = hooks.analyze(sig, c.start, c.end, p.clip_min, p.clip_max, p.source_duration)
+                rec = hooks.variant(h, h['recommended'])
+                if mode == 'auto' and rec and rec['kind'] != 'original':
+                    h['selected'] = rec['id']
+                    if rec['kind'] == 'start':
+                        c.start, c.end = rec['start'], rec['end']
+                        c.text = clip_text(segments, c.start, c.end)[:4000]
+                c.meta = dict(c.meta or {}, hooks=h)
+                c.save()
+    except JobCancelled:
+        raise
+    except Exception:
+        log.exception('hook engine failed; clips keep their start')
+
+
+def _teaser_seconds(c):
+    h = (c.render_info or {}).get('hook') or {}
+    return float(h['teaser'][1] - h['teaser'][0]) if h.get('teaser') and not h.get('error') else 0.0
+
+
+def _apply_teaser(p, c, plan, cfg, vinfo, info, segments, dest, temp, rep):
+    """Selected teaser variant: clip timeline (Timeline IR) + the teaser in front, rendered by the timeline
+    renderer into `dest`. Any problem keeps the clip as it was rendered and is noted in render_info."""
+    from . import hooks
+    h = (c.meta or {}).get('hooks') or {}
+    v = hooks.variant(h, h.get('selected'))
+    if not v or v['kind'] != 'teaser' or not (c.start - 0.05 <= v['teaser'][0] and v['teaser'][1] <= c.end + 0.05):
+        info.pop('hook', None)
+        return
+    try:
+        from .timeline import from_dict, renderer
+        from .timeline.serialize import to_dict
+        snap = info.get('timeline') or _timeline_snapshot(p, c, plan, cfg['opts'], vinfo, info, segments)
+        tl = hooks.prepend_teaser(from_dict(snap), v['teaser'], c.start)
+        out = Path(temp) / 'hooked.mp4'
+        r = renderer.render(tl, out, renderer.RenderSettings(quality=cfg['opts']['quality'],
+                                                             encoder=cfg['opts']['encoder'], workdir=Path(temp) / 'hk'),
+                            cancel=rep.cancelled)
+        os.replace(out, dest)
+        info['timeline'] = to_dict(tl)
+        info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'teaser': v['teaser'], 'score': v['score'],
+                        'renderer': 'timeline', 'seconds': r.get('seconds')}
+    except JobCancelled:
+        raise
+    except Exception as exc:
+        log.warning('teaser for clip %s failed (%s); clip kept without it', c.pk, str(exc)[:300])
+        info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'error': str(exc)[:300]}
 
 
 def _resumed_clips(p, rep):
@@ -981,9 +1048,12 @@ def _run_render(pk, rep, payload):
         raise RuntimeError('Транскрипт отсутствует — запустите обработку проекта заново.')
     rep.skip('fetch', 'transcribe', 'highlights')
     clips = []
+    rehook = []
     ids = payload.get('clip_ids') or []
     for c in Clip.objects.filter(project=p, pk__in=ids):
         b = (payload.get('bounds') or {}).get(str(c.pk))
+        if b and not payload.get('hook'):              # bounds edited by hand: new hook variants, no old choice
+            rehook.append(c)
         if b:
             s, e = float(b[0]), float(b[1])
             s, e = max(0.0, s), min(float(p.source_duration or vinfo['duration']), e)
@@ -1002,6 +1072,10 @@ def _run_render(pk, rep, payload):
                 c.delete()
     if not clips:
         raise ValueError('Не выбрано ни одного клипа.')
+    if rehook:
+        opts = exports.resolve(p.options)
+        if opts.get('hook_engine') != 'off':
+            _find_hooks(p, rehook, segments, source, vinfo, dict(opts, hook_engine='suggest'), rep)
     overrides = payload.get('overrides') or {}
     base = exports.resolve(p.options, overrides if payload.get('apply_to_project') else None)
     for c in clips:
@@ -1062,9 +1136,12 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
         types = [s['type'] for s in plans[c.pk]['segments']]
         try:
             keep = (c.meta or {}).get('short')               # the Shorts title/description is kept across re-edits
+            keep_hooks = (c.meta or {}).get('hooks')         # so are the Hook Engine's variants and the choice
             c.meta = metadata.generate(c.text or clip_text(segments, c.start, c.end), scene_types=types)
             if keep:
                 c.meta['short'] = keep
+            if keep_hooks:
+                c.meta['hooks'] = keep_hooks
             if c.meta.get('titles'):
                 c.title = c.meta['titles'][0][:240]
         except Exception:
@@ -1108,6 +1185,8 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                     c.status, c.error = 'error', str(exc2)[-1500:]
                     c.save(update_fields=['status', 'error', 'updated_at'])
                     continue
+            if not info.get('fallback_renderer'):
+                _apply_teaser(p, c, plans[c.pk], cfg, vinfo, info, segments, dest, temp, rep)
             old_video, old_poster = c.video.name, c.poster.name
             stamp = int(time.time())
             with dest.open('rb') as f:
@@ -1138,7 +1217,7 @@ def _render_clips(p, clips, base_opts, rep, segments, source, vinfo, mode, corne
                 copts = per[c.pk]['opts'] if c.pk in per else base_opts
                 expect = {'size': exports.dims(copts), 'fps': int(copts['fps']) if copts['fps'] != 'source' else None,
                           'lufs': (exports.LOUDNESS.get(copts.get('loudness')) or {}).get('I')}
-                c.quality = quality.validate_clip(c.video.path, c.end - c.start, source_has_audio=vinfo['has_audio'],
+                c.quality = quality.validate_clip(c.video.path, c.end - c.start + _teaser_seconds(c), source_has_audio=vinfo['has_audio'],
                                                   caption_report=cr, text=c.text, siblings=sibs,
                                                   clip_min=p.clip_min, clip_max=p.clip_max, span=(c.start, c.end),
                                                   expect=None if (c.render_info or {}).get('fallback_renderer') else expect)

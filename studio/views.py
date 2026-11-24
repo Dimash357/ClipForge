@@ -541,3 +541,38 @@ def resources_mode(request):
 def resources_unload(request):
     from . import resources
     return JsonResponse({'ok': True, 'unloaded': resources.manager().unload_models(why='из интерфейса')})
+
+
+# ---------------------------------------------------------------- Hook Engine (2A)
+@require_http_methods(['GET', 'POST'])
+def clip_hooks(request, pk):
+    """GET: the clip's hook variants (computed from the cached analysis if missing, ?refresh=1 to redo).
+    POST {variant}: choose one -> the clip is re-rendered in the queue with that opening."""
+    from . import hooks
+    clip = get_object_or_404(Clip, pk=pk)
+    p = clip.project
+    h = (clip.meta or {}).get('hooks')
+    if request.method == 'GET':
+        if not h or request.GET.get('refresh') == '1':
+            if jobs.is_active(p.pk):
+                return _busy(p.pk)
+            if not p.transcript:
+                return JsonResponse({'error': 'Нет транскрипта — обработайте проект.'}, status=400)
+            a0, b0 = (h or {}).get('clip') or (clip.start, clip.end)
+            h = hooks.analyze(hooks.load_signals(p), a0, b0, p.clip_min, p.clip_max, p.source_duration)
+            clip.meta = dict(clip.meta or {}, hooks=h)
+            clip.save(update_fields=['meta', 'updated_at'])
+        return JsonResponse({'hooks': h, 'source_url': _file_url(p.source)})
+    if not h:
+        return JsonResponse({'error': 'Сначала найдите варианты начала.'}, status=400)
+    v = hooks.variant(h, _json_body(request).get('variant'))
+    if v is None:
+        return JsonResponse({'error': 'Нет такого варианта.'}, status=400)
+    if jobs.is_active(p.pk):
+        return _busy(p.pk)
+    h['selected'] = None if v['kind'] == 'original' else v['id']
+    clip.meta = dict(clip.meta or {}, hooks=h)
+    clip.save(update_fields=['meta', 'updated_at'])
+    if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], bounds={str(clip.pk): [v['start'], v['end']]}, hook=True):
+        return _busy(p.pk)
+    return JsonResponse({'ok': True, 'selected': h['selected']})
