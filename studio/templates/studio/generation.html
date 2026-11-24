@@ -1,0 +1,45 @@
+{% extends "studio/base.html" %}
+{% block title %}Генерация изображений и озвучки — ClipForge{% endblock %}
+{% block body %}
+<h1 style="font-size:28px">Генерация изображений и озвучки</h1>
+<p class="muted">Всё локально: изображения — ComfyUI (SDXL / SD 1.5, IP-Adapter), озвучка — Piper или локальный TTS-сервер.
+Без работающего провайдера генерация завершается понятной ошибкой — заглушки вместо результата не подставляются.</p>
+<div class="panel gm-status" id="gm-status" style="padding:12px"><span class="muted">Проверяем…</span></div>
+<form class="panel gm-form" id="gm-form" style="padding:14px">
+  <h2>Изображения — ComfyUI</h2>
+  <div class="gm-grid">
+    <label>Адрес ComfyUI<input name="comfy_url"></label>
+    <label>Тип модели<select name="image_model"><option value="sdxl">SDXL (768×1344, ≈6.5 ГБ VRAM)</option><option value="sd15">SD 1.5 (512×912, ≈3.5 ГБ VRAM)</option></select></label>
+    <label>Checkpoint<select name="checkpoint" id="gm-ckpt"></select></label>
+    <label>Шаги<input name="steps" type="number" min="4" max="80"></label>
+    <label>CFG<input name="cfg" type="number" step="0.5" min="1" max="20"></label>
+    <label>Sampler<input name="sampler"></label><label>Scheduler<input name="scheduler"></label>
+    <label class="gm-check"><input type="checkbox" name="ip_adapter"> IP-Adapter (референсы персонажей)</label>
+    <label>Пресет IP-Adapter<select name="ip_preset" id="gm-ipp"></select></label>
+    <label>Сила IP-Adapter<input name="ip_weight" type="number" step="0.05" min="0" max="1.5"></label>
+  </div>
+  <h2>Озвучка</h2>
+  <div class="gm-grid">
+    <label>Провайдер<select name="tts_provider"><option value="piper">Piper (локально, CPU)</option><option value="openai_tts">Локальный TTS-сервер (OpenAI API)</option><option value="off">Выключено</option></select></label>
+    <label>Папка голосов Piper<input name="piper_dir"></label>
+    <label>Голос по умолчанию (RU)<select name="voice_ru" id="gm-vru"></select></label>
+    <label>Голос по умолчанию (EN)<select name="voice_en" id="gm-ven"></select></label>
+    <label>Скорость речи<input name="tts_speed" type="number" step="0.05" min="0.5" max="2"></label>
+    <label>Адрес TTS-сервера<input name="tts_url" placeholder="http://127.0.0.1:8880/v1"></label>
+    <label>Модель TTS-сервера<input name="tts_model"></label>
+    <label>Голоса TTS-сервера (через запятую)<input name="tts_voices"></label>
+    <label>Тайминги слов<select name="align"><option value="whisper">Whisper (точно)</option><option value="simple">По громкости (быстро)</option></select></label>
+  </div>
+  <div class="row"><button class="primary" type="submit">Сохранить</button><button type="button" id="gm-check">Проверить снова</button><span class="muted" id="gm-saved"></span></div>
+</form>
+<details class="panel" style="padding:14px" open><summary><b>Рекомендуемые модели для RTX 4060 Laptop 8 ГБ и установка</b></summary><div id="gm-rec"></div>
+<ol class="hint gm-steps">
+  <li><b>ComfyUI</b>: скачайте портативную сборку для Windows/NVIDIA с <code>github.com/comfyanonymous/ComfyUI/releases</code>, распакуйте, запустите <code>run_nvidia_gpu.bat</code> (адрес по умолчанию http://127.0.0.1:8188).</li>
+  <li><b>Checkpoint</b>: положите файл модели в <code>ComfyUI\models\checkpoints\</code>, нажмите «Проверить снова» и выберите его выше. Для 8 ГБ: одна SDXL-модель или одна SD 1.5 — не обе сразу.</li>
+  <li><b>IP-Adapter</b> (необязательно): в ComfyUI Manager установите «ComfyUI_IPAdapter_plus», веса — в <code>models\ipadapter\</code>, CLIP Vision — в <code>models\clip_vision\</code> (имена файлов — в README пакета).</li>
+  <li><b>Piper</b>: в папке ClipForge выполните <code>env\Scripts\python -m pip install piper-tts</code>; голоса (<code>.onnx</code> + <code>.onnx.json</code>) с <code>huggingface.co/rhasspy/piper-voices</code> положите в папку голосов (по умолчанию <code>models\piper</code>).</li>
+  <li>Или любой локальный TTS-сервер с OpenAI API (Kokoro-FastAPI, openedai-speech): укажите адрес, модель и голоса.</li>
+  <li>Генерация идёт задачами в «Очереди задач»; ComfyUI освобождает VRAM после партии кадров, локальная LLM выгружается перед генерацией.</li>
+</ol></details>
+{% endblock %}
+{% block scripts %}<script src="/static/studio/generation.js"></script>{% endblock %}

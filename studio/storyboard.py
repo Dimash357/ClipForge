@@ -425,13 +425,16 @@ def apply_to_timeline(tl, doc):
         return tl
     out = copy.deepcopy(tl)
     vtrack = next(t for t in out.tracks if t.type == 'video')
-    assets, items, voice = [], [], []
+    assets, items, voice, exact = [], [], [], []
     for c in out.characters:
         ch = sb['characters'].get(c.id)
         if not ch:
             continue
         aid = stable_id('as', 'ref', c.id)
-        assets.append(m.Asset(id=aid, type='image', uri=f'gen:characters/{c.id}.png', width=1024, height=1024,
+        img = ch.get('image') or {}
+        made = bool(img.get('path') and not img.get('error'))
+        assets.append(m.Asset(id=aid, type='image', uri=f'media:{img["path"]}' if made else f'gen:characters/{c.id}.png',
+                              width=img.get('width') if made else 1024, height=img.get('height') if made else 1024,
                               generation=m.Generation(provider='image', prompt=ch['ref_prompt'],
                                                       negative=sb['style'].get('negative', ''), seed=ch['seed'],
                                                       params={'kind': 'character_sheet'})))
@@ -444,7 +447,10 @@ def apply_to_timeline(tl, doc):
             continue
         for f in ssb['frames']:
             aid = stable_id('as', 'frame', f['id'])
-            assets.append(m.Asset(id=aid, type='image', uri=f'gen:frames/{f["id"]}.png', width=1080, height=1920,
+            img = (f.get('assets') or {}).get('image') or {}
+            made = bool(img.get('path') and not img.get('error'))
+            assets.append(m.Asset(id=aid, type='image', uri=f'media:{img["path"]}' if made else f'gen:frames/{f["id"]}.png',
+                                  width=img.get('width') if made else 1080, height=img.get('height') if made else 1920,
                                   generation=m.Generation(provider='image', prompt=f['prompt'], negative=f['negative'],
                                                           seed=f['seed'], revision=f['revision'],
                                                           params={'shot': f['shot'], 'camera': f['camera'],
@@ -463,22 +469,40 @@ def apply_to_timeline(tl, doc):
                                      duration=round(f['duration'], 3), scene=s['id'], asset=aid, animations=anim,
                                      ext={'clipforge.frame': {'id': f['id'], 'locked': f['locked']}}))
         t = s['start'] + 0.2
-        for li, line in enumerate(s['lines']):          # voice per line: the text and the voice to use
-            dur = max(0.5, len(line['text'].split()) / sg.WPS.get(doc['language'], 2.4))
+        slot = (sb.get('voice') or {}).get(s['id']) or {}
+        for li, line in enumerate(s['lines']):          # voice per line: generated file + exact timing, or the plan
+            v = slot.get(str(li)) or {}
+            made = bool(v.get('path') and v.get('duration') and not v.get('error'))
+            dur = v['duration'] if made else max(0.5, len(line['text'].split()) / sg.WPS.get(doc['language'], 2.4))
+            if made and v.get('start') is not None:
+                t = s['start'] + v['start']
             ch = sb['characters'].get(line['speaker'])
             aid = stable_id('as', 'voice', s['id'], li, s['revision'])
-            assets.append(m.Asset(id=aid, type='audio', uri=f'gen:voice/{s["id"]}_{li}.wav',
+            assets.append(m.Asset(id=aid, type='audio', uri=f'media:{v["path"]}' if made else
+                                  f'gen:voice/{s["id"]}_{li}.wav', duration=dur if made else None,
+                                  has_audio=True if made else None,
                                   generation=m.Generation(provider='tts', prompt=line['text'],
-                                                          params={'voice': (ch or {}).get('voice') or 'narrator',
+                                                          params={'voice': v.get('voice') or (ch or {}).get('tts_voice')
+                                                                  or (ch or {}).get('voice') or 'narrator',
                                                                   'speaker': line['speaker'],
                                                                   'language': doc['language']})))
             d = round(min(dur, s['start'] + s['duration'] - t), 3)
             if d > 0.1:
                 voice.append(m.AudioItem(id=stable_id('it', 'voice', s['id'], li), start=round(t, 3), duration=d,
                                          scene=s['id'], asset=aid, role='voice'))
-            t += dur
+                for w in (v.get('words') or []) if made else []:      # captions on the real audio
+                    if w['t1'] <= dur + 0.01:
+                        exact.append(m.Word(t0=round(t + w['t0'], 3), t1=round(min(t + w['t1'], t + d), 3),
+                                            text=w['text']))
+            t += dur + 0.15
     vtrack.items = items
     out.assets = assets
+    cap = next((t for t in out.tracks if t.type == 'caption'), None)
+    by_id = {a.id: a for a in assets}
+    voiced = sum(by_id[x.asset].uri.startswith('media:') for x in voice)
+    if cap is not None and exact and voiced == len(voice):
+        exact.sort(key=lambda w: w.t0)
+        cap.items[0].words = [w for w in exact if w.t1 > w.t0]
     if voice:
         out.tracks.append(m.Track(id=stable_id('tr', out.id, 'voice'), type='audio', name='Озвучка (3C)', items=voice))
     out.ext = dict(out.ext, **{'clipforge.storyboard': {'version': VERSION, 'style': sb['style'],

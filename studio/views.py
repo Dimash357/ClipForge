@@ -909,8 +909,13 @@ def storyboard_api(request, pk):
     from . import storyboard as sb
     sc = get_object_or_404(Script, pk=pk)
     if request.method == 'GET':
+        from . import genmedia
         d = _script_json(sc)
         d['stale'] = sb.mark_stale(sc.data) if (sc.data or {}).get('scenes') else []
+        d['media'] = genmedia.summary(sc.data) if (sc.data or {}).get('storyboard') else None
+        d['media_url'] = settings.MEDIA_URL
+        mj = Job.objects.filter(kind='media', payload__script_id=sc.pk).order_by('-created_at').first()
+        d['media_job'] = _live_info(mj)
         return JsonResponse(d)
     if sc.status == 'generating':
         return _script_busy()
@@ -961,5 +966,112 @@ def storyboard_bible(request, pk):
         return JsonResponse({'error': 'Раскадровки ещё нет.'}, status=400)
     data = _json_body(request)
     sc.data = sb.edit_bibles(sc.data, data.get('style'), data.get('characters'))
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True})
+
+
+# ---------------------------------------------------------------- AI Visual & Voice Engine (3C)
+@ensure_csrf_cookie
+def generation_page(request):
+    return render(request, 'studio/generation.html', {})
+
+
+@require_GET
+def media_status(request):
+    from . import genmedia
+    return JsonResponse(genmedia.status())
+
+
+@require_POST
+def media_config(request):
+    from . import genmedia
+    return JsonResponse({'ok': True, 'config': genmedia.save_config(_json_body(request))})
+
+
+def _media_ready(sc):
+    if sc.status == 'generating':
+        return _script_busy()
+    if not (sc.data or {}).get('storyboard'):
+        return JsonResponse({'error': 'Сначала нужна раскадровка (3B).'}, status=400)
+    return None
+
+
+@require_POST
+def script_media(request, pk):
+    """{what: all|images|voice|frames|characters|lines, ids?, force?} -> a 'media' job (heavy, GPU)."""
+    sc = get_object_or_404(Script, pk=pk)
+    bad = _media_ready(sc)
+    if bad:
+        return bad
+    data = _json_body(request)
+    what = data.get('what', 'all')
+    if what not in ('all', 'images', 'voice', 'frames', 'characters', 'lines'):
+        return JsonResponse({'error': 'what: all | images | voice | frames | characters | lines'}, status=400)
+    sc.status = 'generating'
+    sc.save(update_fields=['status', 'updated_at'])
+    jobs.submit('media', title=f'Медиа: {sc.title or sc.idea[:60]}', script_id=sc.pk, what=what,
+                ids=data.get('ids') or None, force=bool(data.get('force')))
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def media_upload_frame(request, pk, fid):
+    """Replace a frame's image with the user's own picture."""
+    from . import genmedia
+    sc = get_object_or_404(Script, pk=pk)
+    bad = _media_ready(sc)
+    if bad:
+        return bad
+    f = request.FILES.get('file')
+    if not f:
+        return JsonResponse({'error': 'Нет файла.'}, status=400)
+    try:
+        sc.data = genmedia.replace_image(sc.data, sc.pk, fid, f)
+    except KeyError:
+        raise Http404
+    except Exception as exc:
+        return JsonResponse({'error': f'Не удалось прочитать изображение: {str(exc)[:150]}'}, status=400)
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def media_upload_voice(request, pk, sid, li):
+    """Replace a line's audio with the user's own recording (timings are measured again)."""
+    import tempfile
+    from . import genmedia
+    sc = get_object_or_404(Script, pk=pk)
+    bad = _media_ready(sc)
+    if bad:
+        return bad
+    f = request.FILES.get('file')
+    if not f:
+        return JsonResponse({'error': 'Нет файла.'}, status=400)
+    with tempfile.NamedTemporaryFile(suffix=Path(f.name).suffix or '.wav', delete=False) as tmp:
+        for chunk in f.chunks():
+            tmp.write(chunk)
+    try:
+        sc.data = genmedia.replace_voice(sc.data, sc.pk, sid, int(li), tmp.name)
+    except KeyError:
+        raise Http404
+    except Exception as exc:
+        return JsonResponse({'error': f'Не удалось прочитать аудио: {str(exc)[:150]}'}, status=400)
+    finally:
+        os.unlink(tmp.name)
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True})
+
+
+@require_POST
+def storyboard_voice(request, pk, cid):
+    """{tts_voice}: the TTS voice of a character (from the voices the provider offers)."""
+    sc = get_object_or_404(Script, pk=pk)
+    bad = _media_ready(sc)
+    if bad:
+        return bad
+    ch = sc.data['storyboard']['characters'].get(cid)
+    if ch is None:
+        raise Http404
+    ch['tts_voice'] = str(_json_body(request).get('tts_voice') or '')[:120]
     sc.save(update_fields=['data', 'updated_at'])
     return JsonResponse({'ok': True})

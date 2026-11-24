@@ -149,3 +149,13 @@ footer{color:var(--mut);font-size:13px;margin-top:30px;text-align:center}
 .sb-thumb{aspect-ratio:9/16;max-height:200px;border-radius:10px;position:relative;display:flex;flex-direction:column;justify-content:flex-end;padding:8px;color:#fff;text-shadow:0 1px 3px #000}
 .sb-thumb span{position:absolute;top:6px;left:8px;font-weight:800;font-size:18px}.sb-thumb small{white-space:pre-line;font-size:11px}.sb-thumb em{font-size:11px;opacity:.8}
 .sb-scene{display:flex;flex-direction:column;gap:4px}
+
+/* AI Visual & Voice Engine */
+.gm-status{display:flex;flex-direction:column;gap:4px}.gm-ok{color:var(--ok)}.gm-bad{color:var(--warn)}
+.gm-form h2{font-size:16px;margin:4px 0 8px}.gm-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;margin-bottom:12px}
+.gm-grid label{display:flex;flex-direction:column;gap:4px;font-size:13px}.gm-grid input,.gm-grid select{background:#0d111c;border:1px solid #2a3350;border-radius:10px;color:inherit;padding:7px 9px;font:inherit}
+.gm-check{flex-direction:row!important;align-items:center;gap:8px!important}.gm-steps li{margin:6px 0}
+.sb-thumb img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:10px}.sb-thumb>*{position:relative}
+.sb-thumb.err{outline:2px solid var(--bad)}.sb-voice{display:flex;flex-direction:column;gap:6px;margin-top:8px}
+.sb-line{display:flex;gap:8px;align-items:center;flex-wrap:wrap;font-size:13px}.sb-line audio{height:30px;max-width:260px}
+.sb-sheet{width:120px;aspect-ratio:1;border-radius:10px;object-fit:cover;border:1px solid #2a3350}

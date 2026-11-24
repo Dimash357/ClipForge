@@ -193,12 +193,55 @@ def _script_job(job, rep):
         raise
 
 
+def _media_job(job, rep):
+    """3C: images (ComfyUI) and / or voices (TTS) for a script's storyboard. Every finished item is saved at once,
+    so a cancelled or interrupted job continues where it stopped. payload: script_id, what, ids, force."""
+    from . import genmedia
+    from .models import Script
+    sc = Script.objects.get(pk=job.payload['script_id'])
+    doc = sc.data
+    what, ids, force = job.payload.get('what', 'all'), job.payload.get('ids'), bool(job.payload.get('force'))
+    cfg = genmedia.config()
+    report = {}
+
+    def saver(stage):
+        def save(frac, msg):
+            Script.objects.filter(pk=sc.pk).update(data=doc)
+            rep.frac(frac, f'{stage}: {msg}')
+        return save
+    try:
+        if what in ('all', 'images', 'frames', 'characters'):
+            rep.stage('render', 'Изображения: ComfyUI...', frac=0.0)
+            report['images'] = genmedia.gen_images(
+                doc, sc.pk, cfg, frame_ids=set(ids) if what == 'frames' and ids else None,
+                characters=set(ids) if what == 'characters' and ids else None, force=force, cancel=rep.cancelled,
+                progress=saver('Изображения'))
+            rep.checkpoint('images', **{k: v for k, v in report['images'].items() if k != 'errors'})
+        if what in ('all', 'voice', 'lines'):
+            rep.stage('transcribe', 'Озвучка и точные тайминги...', frac=0.0)
+            report['voice'] = genmedia.gen_voices(
+                doc, sc.pk, cfg, lines=[list(x) for x in ids] if what == 'lines' and ids else None,
+                scene_ids=None, force=force, cancel=rep.cancelled, progress=saver('Озвучка'))
+            rep.checkpoint('voice', **{k: v for k, v in report['voice'].items() if k != 'errors'})
+        errs = [e for r in report.values() for e in r.get('errors', [])]
+        doc['storyboard']['media_report'] = dict(report, at=int(time.time()))
+        Script.objects.filter(pk=sc.pk).update(data=doc, status='ready', error=(
+            f'{len(errs)} элемент(ов) не удалось: ' + '; '.join(e['error'] for e in errs[:3])) if errs else '')
+    except JobCancelled:
+        Script.objects.filter(pk=sc.pk).update(data=doc, status='ready')
+        raise
+    except Exception as exc:
+        Script.objects.filter(pk=sc.pk).update(data=doc, status='error', error=str(exc)[:1000])
+        raise
+
+
 def _register_builtin():
     for kind, label in (('full', 'Stream Clipper: обработка'), ('resume', 'Stream Clipper: продолжение'),
                         ('reprocess', 'Stream Clipper: заново'), ('render', 'Stream Clipper: рендер клипов')):
         register(kind, _pipeline_job, label=label)
     register('timeline_render', _timeline_job, label='Рендер Timeline IR', needs_project=False)
     register('script', _script_job, label='Сценарий (AI Script Generator)', resource='light', needs_project=False)
+    register('media', _media_job, label='Изображения и озвучка (3C)', resource='heavy', needs_project=False)
 
 
 # ---------------------------------------------------------------- DB helpers (SQLite: retry on "locked")

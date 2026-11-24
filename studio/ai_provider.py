@@ -89,6 +89,22 @@ def extract_json(text):
     return json.loads(m.group(0))
 
 
+def unload_local(post=None):
+    """Ask a local Ollama to drop its model from VRAM now (keep_alive 0), before ComfyUI needs the card."""
+    c = config()
+    if c['kind'] != 'ollama':
+        return False
+    try:
+        if post is None:
+            import requests
+            post = requests.post
+        post(c['url'] + '/api/generate', json={'model': c['model'], 'keep_alive': 0}, timeout=(3.05, 20))
+        return True
+    except Exception as exc:
+        log.info('could not unload the Ollama model: %s', exc)
+        return False
+
+
 def is_local():
     """True when the configured model runs on this computer (Ollama, LM Studio...): it uses our GPU."""
     c = config()
