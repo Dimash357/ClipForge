@@ -22,6 +22,18 @@ log = logging.getLogger('studio.comfy')
 SIZES = {'sdxl': (768, 1344), 'sd15': (512, 912)}
 SMALLER = {'sdxl': (640, 1136), 'sd15': (448, 800)}
 VRAM_MB = {'sdxl': 6500, 'sd15': 3500}
+ASPECTS = ('9:16', '16:9', '1:1')
+
+
+def size_for(model, aspect='9:16', smaller=False):
+    """Native generation size for a model and frame aspect (SDXL buckets / SD 1.5 sizes, multiples of 8)."""
+    w, h = (SMALLER if smaller else SIZES)[model]
+    if aspect == '16:9':
+        return h, w
+    if aspect == '1:1':
+        side = {'sdxl': 1024, 'sd15': 640}[model]
+        return (side - 128, side - 128) if smaller else (side, side)
+    return w, h
 IPA_NODES = ('IPAdapterUnifiedLoader', 'IPAdapter')
 
 

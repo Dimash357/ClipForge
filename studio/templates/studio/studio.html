@@ -1,0 +1,29 @@
+{% extends "studio/base.html" %}
+{% block title %}Cartoon Studio — ClipForge{% endblock %}
+{% block body %}
+<div class="hero"><div class="eyebrow">CARTOON STUDIO</div><h1>Видео из <em>одной идеи</em></h1>
+<p>Сценарий → раскадровка → изображения → озвучка → монтаж → MP4. Всё локально: LLM, ComfyUI, Piper, ffmpeg.
+Если провайдер не настроен, этап остановится с понятной ошибкой — без заглушек.</p></div>
+<form class="panel cs-form" id="cs-form">
+  <h2>Что делаем</h2>
+  <div class="cs-formats">{% for k, v in formats.items %}<label class="cs-fmt"><input type="radio" name="format" value="{{ k }}" {% if forloop.first %}checked{% endif %}><span>{{ v }}</span></label>{% endfor %}</div>
+  <label>Идея<textarea name="idea" rows="3" placeholder="Например: почему кошки всегда приземляются на лапы" required></textarea></label>
+  <div class="gm-grid">
+    <label>Язык<select name="language">{% for k, v in langs.items %}<option value="{{ k }}">{{ v }}</option>{% endfor %}</select></label>
+    <label>Длительность, с<input name="duration" type="number" min="10" max="600" value="45"></label>
+    <label>Стиль<input name="style" type="text" placeholder="pixar 3d, аниме, акварель…"></label>
+    <label>Аудитория<input name="audience" type="text" placeholder="необязательно"></label>
+  </div>
+  <details><summary><b>Формат, качество, звук</b></summary>{% include "studio/_cs_settings.html" %}</details>
+  <div class="row cs-mode">
+    <button class="primary" type="submit" data-mode="oneclick">⚡ One Click — сделать видео</button>
+    <button type="submit" data-mode="manual">Пошагово (сначала только сценарий)</button>
+    <span class="muted" id="cs-msg"></span>
+  </div>
+</form>
+<div class="panel"><h2>Проекты</h2>
+{% if items %}<div class="cs-list">{% for s in items %}<a class="cs-item" href="/studio/{{ s.pk }}/"><b>{{ s.title|default:s.idea|truncatechars:70 }}</b><small>{{ s.get_format_display }} · {{ s.get_status_display }} · {{ s.updated_at|date:"d.m H:i" }}</small></a>{% endfor %}</div>
+{% else %}<p class="muted">Пока нет проектов.</p>{% endif %}</div>
+{{ defaults|json_script:"cs-defaults" }}
+<script src="/static/studio/cartoon.js"></script>
+{% endblock %}

@@ -1,0 +1,24 @@
+{% extends "studio/base.html" %}
+{% block title %}{{ script.title|default:"Проект" }} — Cartoon Studio{% endblock %}
+{% block body %}
+<div class="cs-head"><div><a class="muted" href="/studio/">← Cartoon Studio</a><h1 id="cs-title" style="font-size:28px">{{ script.title|default:script.idea|truncatechars:80 }}</h1>
+<p class="muted" id="cs-sub"></p></div>
+<div class="row"><a class="btn sm" href="/scripts/{{ script.pk }}/">Сценарий</a><a class="btn sm" href="/scripts/{{ script.pk }}/storyboard/">Раскадровка и медиа</a><a class="btn sm" href="/generation/">Провайдеры</a></div></div>
+<div class="panel" id="cs-run">
+  <div class="row"><button class="primary" id="cs-all">⚡ Продолжить до готового видео</button><button id="cs-cancel" class="danger" hidden>Отменить</button><span class="muted" id="cs-msg"></span></div>
+  <div class="cs-bar"><i id="cs-bar"></i></div><div class="hint" id="cs-job"></div>
+  <div class="cs-stages" id="cs-stages"></div>
+</div>
+<div class="cs-cols">
+  <div class="panel"><h2>Результат</h2><div id="cs-video" class="cs-video"><span class="muted">Видео ещё не собрано.</span></div>
+    <h2 style="margin-top:16px">Название, описание, хештеги</h2>
+    <form id="cs-meta"><label>Название<input type="text" name="title"></label><label>Описание<textarea name="description" rows="4"></textarea></label>
+    <label>Хештеги<input type="text" name="hashtags"></label><div class="row"><button class="sm" type="submit">Сохранить</button><button class="sm" type="button" id="cs-meta-regen">Сгенерировать заново</button><span class="muted" id="cs-meta-msg"></span></div></form></div>
+  <form class="panel" id="cs-settings"><h2>Формат и звук</h2>{% include "studio/_cs_settings.html" %}
+    <div class="row"><button class="sm" type="submit">Сохранить</button><span class="hint">Изменения пересоберут только монтаж и экспорт; сцены без изменений берутся из кэша.</span></div></form>
+</div>
+<div class="panel"><h2>Кадры</h2><p class="hint">Перегенерация кадра или реплики не трогает остальное; затем «Продолжить» пересоберёт видео (перерендерятся только изменённые сцены). Замена своим файлом и тонкая правка — в «Раскадровке».</p><div class="cs-frames" id="cs-frames"></div></div>
+<div class="panel"><h2>Озвучка</h2><div id="cs-lines"></div></div>
+<script>window.CS_ID = {{ script.pk }};</script>
+<script src="/static/studio/cartoon.js"></script>
+{% endblock %}

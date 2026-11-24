@@ -483,7 +483,7 @@ def _job_json(j, now):
         label = j.kind
     return {'id': j.pk, 'kind': j.kind, 'label': label, 'title': j.title, 'project': j.project_id,
             'status': j.status, 'status_label': dict(Job.STATUSES).get(j.status, j.status), 'priority': j.priority,
-            'stage': j.stage, 'stage_label': dict((k, l) for k, l, _ in jobs.STAGES).get(j.stage, j.stage),
+            'stage': j.stage, 'stage_label': _stage_label(j.stage),
             'stage_progress': j.stage_progress, 'progress': j.progress, 'message': j.message, 'error': j.error[-600:],
             'attempts': j.attempts, 'max_attempts': j.max_attempts, 'checkpoints': sorted(j.checkpoints or {}),
             'pause_requested': j.pause_requested, 'cancel_requested': j.cancel_requested, 'live': _live_info(j),
@@ -1075,3 +1075,155 @@ def storyboard_voice(request, pk, cid):
     ch['tts_voice'] = str(_json_body(request).get('tts_voice') or '')[:120]
     sc.save(update_fields=['data', 'updated_at'])
     return JsonResponse({'ok': True})
+
+
+# ---------------------------------------------------------------- Cartoon Studio (3D)
+def _stage_label(key):
+    if key and key.startswith('p_'):
+        from . import production
+        return dict(production.STAGES).get(key[2:], key)
+    return dict((k, l) for k, l, _ in jobs.STAGES).get(key, key)
+
+
+@ensure_csrf_cookie
+def studio_page(request):
+    from . import production, scripts as sg
+    items = [s for s in Script.objects.order_by('-updated_at')[:60] if 'production' in (s.data or {})][:20]
+    return render(request, 'studio/studio.html', {
+        'formats': sg.FORMATS, 'langs': sg.LANGS, 'choices': production.CHOICES, 'defaults': production.DEFAULTS,
+        'items': items})
+
+
+@ensure_csrf_cookie
+def studio_project(request, pk):
+    from . import production
+    sc = get_object_or_404(Script, pk=pk)
+    return render(request, 'studio/studio_project.html', {'script': sc, 'choices': production.CHOICES})
+
+
+@require_POST
+def studio_create(request):
+    """{idea, format, language, duration, style, genre, audience, settings{}, mode: oneclick|manual}."""
+    from . import production, scripts as sg
+    data = _json_body(request)
+    idea = str(data.get('idea') or '').strip()
+    if len(idea) < 3:
+        return JsonResponse({'error': 'Опишите идею видео (хотя бы пару слов).'}, status=400)
+    st = production.clean_settings(data.get('settings') or {})
+    fields = {k: v for k, v in sg.settings_of(data).items()
+              if k in ('format', 'language', 'duration', 'genre', 'style', 'audience')}
+    sc = Script.objects.create(idea=idea[:2000], title=str(data.get('title') or '')[:250], status='draft',
+                               data={'production': {'settings': st, 'stages': {}, 'mode': data.get('mode', 'oneclick')}},
+                               **fields)
+    if data.get('mode', 'oneclick') == 'oneclick':
+        _submit_production(sc, {})
+    else:
+        _submit_production(sc, {'only': ['script']})
+    return JsonResponse({'ok': True, 'id': sc.pk, 'url': f'/studio/{sc.pk}/'})
+
+
+def _production_job(sc):
+    return Job.objects.filter(kind='production', payload__script_id=sc.pk).order_by('-created_at').first()
+
+
+def _submit_production(sc, payload):
+    from . import production
+    j = _production_job(sc)
+    if j is not None and j.status in Job.LIVE:
+        return None
+    for k in payload.get('force') or ():
+        if k not in production.STAGE_KEYS:
+            raise ValueError(k)
+    Script.objects.filter(pk=sc.pk).update(status='generating', error='')
+    return jobs.submit('production', title=f'Видео: {sc.title or sc.idea[:60]}', script_id=sc.pk,
+                       only=payload.get('only'), until=payload.get('until'), force=payload.get('force') or [])
+
+
+@require_GET
+def studio_api(request, pk):
+    from . import production
+    sc = get_object_or_404(Script, pk=pk)
+    d = production.overview(sc.data or {}, sc)
+    j = _production_job(sc)
+    d.update(id=sc.pk, idea=sc.idea, status=sc.status, error=sc.error, media_url=settings.MEDIA_URL,
+             language=sc.language, duration=sc.duration,
+             job=None if j is None else dict(_live_info(j), progress=j.progress, message=j.message,
+                                             stage=_stage_label(j.stage), error=j.error[:500] if j.error else ''))
+    mj = Job.objects.filter(kind='media', payload__script_id=sc.pk).order_by('-created_at').first()
+    d['media_job'] = None if mj is None or mj.status not in Job.LIVE else {'id': mj.pk, 'message': mj.message}
+    sb = (sc.data or {}).get('storyboard') or {}
+    d['frames'] = [{'id': f['id'], 'scene': s['id'], 'image': ((f.get('assets') or {}).get('image') or {}),
+                    'shot': f.get('shot'), 'camera': f.get('camera')}
+                   for s in (sc.data or {}).get('scenes', []) for f in (sb.get('scenes') or {}).get(s['id'], {})
+                   .get('frames', [])]
+    names = {c['id']: c['name'] for c in (sc.data or {}).get('characters', [])}
+    d['lines'] = [{'scene': s['id'], 'li': li, 'text': l['text'],
+                   'speaker': names.get(l['speaker'], 'Рассказчик' if l['speaker'] == 'narrator' else l['speaker']),
+                   'voice': ((sb.get('voice') or {}).get(s['id']) or {}).get(str(li)) or {}}
+                  for s in (sc.data or {}).get('scenes', []) for li, l in enumerate(s['lines'])]
+    return JsonResponse(d)
+
+
+@require_POST
+def studio_run(request, pk):
+    """{only?: [stage], until?: stage, force?: [stage]} -> the production job (continues from saved state)."""
+    from . import production
+    sc = get_object_or_404(Script, pk=pk)
+    data = _json_body(request)
+    keys = set(production.STAGE_KEYS)
+    only = [k for k in (data.get('only') or []) if k in keys] or None
+    until = data.get('until') if data.get('until') in keys else None
+    force = [k for k in (data.get('force') or []) if k in keys]
+    mj = Job.objects.filter(kind='media', payload__script_id=sc.pk, status__in=Job.LIVE).exists()
+    if mj or sc.status == 'generating' and _production_job(sc) and _production_job(sc).status in Job.LIVE:
+        return JsonResponse({'error': 'Проект уже обрабатывается — дождитесь окончания или отмените задачу.'},
+                            status=409)
+    if 'script' in force and (sc.data or {}).get('scenes'):
+        force = sorted(set(force) | {'storyboard'}, key=production.STAGE_KEYS.index)
+    j = _submit_production(sc, {'only': only, 'until': until, 'force': force})
+    if j is None:
+        return JsonResponse({'error': 'Задача уже в очереди.'}, status=409)
+    return JsonResponse({'ok': True, 'job': j.pk})
+
+
+@require_POST
+def studio_settings(request, pk):
+    from . import production
+    sc = get_object_or_404(Script, pk=pk)
+    data = _json_body(request)
+    doc = sc.data or {}
+    p = production.prod(doc)
+    p['settings'] = production.clean_settings(dict(p['settings'], **(data.get('settings') or {})))
+    for k in ('title', 'idea'):
+        if isinstance(data.get(k), str) and data[k].strip():
+            setattr(sc, k, data[k].strip()[:2000 if k == 'idea' else 250])
+    sc.data = doc
+    sc.save(update_fields=['data', 'title', 'idea', 'updated_at'])
+    return JsonResponse({'ok': True, 'settings': p['settings']})
+
+
+@require_POST
+def studio_meta(request, pk):
+    from . import production
+    sc = get_object_or_404(Script, pk=pk)
+    data = _json_body(request)
+    doc = sc.data or {}
+    p = production.prod(doc)
+    meta = dict(p.get('meta') or {})
+    if isinstance(data.get('title'), str):
+        meta['title'] = data['title'].strip()[:100]
+    if isinstance(data.get('description'), str):
+        meta['description'] = data['description'].strip()[:3000]
+    if 'hashtags' in data:
+        tags = data['hashtags'] if isinstance(data['hashtags'], list) else str(data['hashtags']).split()
+        meta['hashtags'] = ['#' + re.sub(r'[^\w]', '', str(t).lstrip('#')) for t in tags if str(t).strip('#')][:15]
+    meta['provider'] = 'manual'
+    p['meta'] = meta
+    out = (p.get('output') or {}).get('path')
+    if out and (Path(settings.MEDIA_ROOT) / out).is_file():
+        (Path(settings.MEDIA_ROOT) / out).with_suffix('.txt').write_text(
+            f'{meta.get("title", "")}\n\n{meta.get("description", "")}\n\n{" ".join(meta.get("hashtags", []))}\n',
+            encoding='utf-8')
+    sc.data = doc
+    sc.save(update_fields=['data', 'updated_at'])
+    return JsonResponse({'ok': True, 'meta': meta})

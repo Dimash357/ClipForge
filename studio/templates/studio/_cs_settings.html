@@ -1,0 +1,15 @@
+<div class="gm-grid">
+  <label>Формат кадра<select name="aspect"><option value="9:16">9:16 — Shorts / Reels / TikTok</option><option value="16:9">16:9 — YouTube</option><option value="1:1">1:1 — квадрат</option></select></label>
+  <label>Разрешение<select name="resolution"><option value="1080">1080p</option><option value="720">720p (быстрее)</option></select></label>
+  <label>Качество<select name="quality"><option value="high">Высокое</option><option value="balanced">Баланс</option><option value="small">Компактное</option></select></label>
+  <label>FPS<select name="fps"><option value="30">30</option><option value="24">24</option></select></label>
+  <label>Переходы<select name="transition"><option value="smooth">Плавные (наплыв)</option><option value="dynamic">Динамичные (склейки + короткий наплыв)</option><option value="cut">Только склейки</option></select></label>
+  <label>Камера<select name="motion"><option value="smooth">Плавные zoom/pan</option><option value="dynamic">Активные</option><option value="off">Без движения</option></select></label>
+  <label>Музыка<select name="music"><option value="auto">Авто (своя папка, иначе синтез)</option><option value="synth">Синтез (локально)</option><option value="library">Только из папки</option><option value="off">Без музыки</option></select></label>
+  <label>Громкость музыки<input name="music_volume" type="number" min="0" max="1" step="0.02"></label>
+  <label>Папка музыки<input name="music_dir" type="text" placeholder="D:\Music\Background"></label>
+  <label>Папка звуков (SFX)<input name="sfx_dir" type="text" placeholder="необязательно"></label>
+  <label class="gm-check"><input type="checkbox" name="sfx"> Звуковые эффекты</label>
+  <label class="gm-check"><input type="checkbox" name="captions"> Субтитры</label>
+  <label class="gm-check"><input type="checkbox" name="voice"> Озвучка</label>
+</div>

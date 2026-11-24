@@ -63,12 +63,16 @@ def _seed(*parts):
 
 
 # ------------------------------------------------------------------ bibles
+ASPECT_TEXT = {'9:16': 'vertical 9:16 framing', '16:9': 'horizontal 16:9 cinematic framing', '1:1': 'square 1:1 framing'}
+
+
 def default_style(doc):
     base = dict(STYLE_BY_FORMAT.get(doc['format'], STYLE_BY_FORMAT['faceless']))
     if doc.get('style'):
         base['look'] = f'{doc["style"]}, {base["look"]}'
-    base.update(camera_language='vertical 9:16 framing, subject readable on a phone', aspect='9:16',
-                negative=NEG_BASE)
+    aspect = doc.get('aspect') or '9:16'
+    base.update(camera_language=ASPECT_TEXT.get(aspect, ASPECT_TEXT['9:16']) + ', subject readable on a phone',
+                aspect=aspect, negative=NEG_BASE)
     return base
 
 
@@ -99,7 +103,8 @@ def compose(frame, scene_sb, sb):
     env = scene_sb.get('location') or sb['style'].get('environment', '')
     pos = ', '.join(b for b in (
         frame['shot'], frame['action'], f'setting: {env}' if env else '', frame['composition'],
-        '; '.join(char_text(c) for c in chars), style_text(sb['style']), 'vertical 9:16') if b)
+        '; '.join(char_text(c) for c in chars), style_text(sb['style']),
+        ASPECT_TEXT.get(sb['style'].get('aspect'), 'vertical 9:16').split(' framing')[0]) if b)
     neg = ', '.join(b for b in (sb['style'].get('negative') or NEG_BASE,) if b)
     return _s(pos, 1500), _s(neg, 600)
 

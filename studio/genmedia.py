@@ -136,8 +136,9 @@ def _file_hash(path):
 
 # ------------------------------------------------------------------ images
 def image_key(cfg, prompt, negative, seed, refs=()):
-    from .comfy import SIZES
-    return key_of('img', cfg['image_model'], cfg['checkpoint'], SIZES[cfg['image_model']], cfg['steps'], cfg['cfg'],
+    from .comfy import size_for
+    return key_of('img', cfg['image_model'], cfg['checkpoint'], size_for(cfg['image_model'], cfg.get('aspect', '9:16')),
+                  cfg['steps'], cfg['cfg'],
                   cfg['sampler'], cfg['scheduler'], prompt, negative, seed,
                   [(r, cfg['ip_preset'], cfg['ip_weight']) for r in refs])
 
@@ -145,7 +146,7 @@ def image_key(cfg, prompt, negative, seed, refs=()):
 def _render_image(cl, cfg, prompt, negative, seed, dest, refs=(), cancel=None):
     """One ComfyUI run (OOM: free VRAM, one retry smaller). -> (width, height)."""
     from . import comfy, resources
-    w, h = comfy.SIZES[cfg['image_model']]
+    w, h = comfy.size_for(cfg['image_model'], cfg.get('aspect', '9:16'))
     for attempt in (0, 1):
         g = comfy.Client.workflow(checkpoint=cfg['checkpoint'], prompt=prompt, negative=negative, seed=seed,
                                   width=w, height=h, steps=cfg['steps'], cfg=cfg['cfg'], sampler=cfg['sampler'],
@@ -159,7 +160,7 @@ def _render_image(cl, cfg, prompt, negative, seed, dest, refs=(), cancel=None):
             resources.manager().on_oom('ComfyUI', exc)
             if attempt:
                 raise
-            w, h = comfy.SMALLER[cfg['image_model']]
+            w, h = comfy.size_for(cfg['image_model'], cfg.get('aspect', '9:16'), smaller=True)
             log.warning('ComfyUI out of memory; retrying at %dx%d', w, h)
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_suffix('.part.png')
@@ -215,7 +216,8 @@ def gen_images(doc, sid, cfg, frame_ids=None, characters=None, force=False, canc
         try:
             for cid in chars:
                 ch = sb['characters'][cid]
-                key = image_key(cfg, ch['ref_prompt'], sb['style'].get('negative', ''), ch['seed'])
+                cfg_ch = dict(cfg, aspect='9:16')          # reference sheets keep one size for every format
+                key = image_key(cfg_ch, ch['ref_prompt'], sb['style'].get('negative', ''), ch['seed'])
                 n += 1
                 force_ch = force and (characters is not None or frame_ids is None)   # a frame's redo keeps sheets
                 if not force_ch and valid(ch.get('image'), key):
@@ -223,7 +225,7 @@ def gen_images(doc, sid, cfg, frame_ids=None, characters=None, force=False, canc
                     continue
                 dest = root(sid) / 'characters' / f'{cid}_{key}.png'
                 try:
-                    size = _render_image(cl, cfg, ch['ref_prompt'], sb['style'].get('negative', ''), ch['seed'], dest,
+                    size = _render_image(cl, cfg_ch, ch['ref_prompt'], sb['style'].get('negative', ''), ch['seed'], dest,
                                          cancel=cancel)
                     ch['image'] = _asset(dest, key, cfg, ch['seed'], size)
                     stats['done'] += 1

@@ -235,6 +235,20 @@ def _media_job(job, rep):
         raise
 
 
+def _production_job(job, rep):
+    """3D Cartoon Studio: idea -> MP4. payload: script_id, only (stage keys), until, force (stage keys)."""
+    from . import production
+    from .models import Script
+    sc = Script.objects.get(pk=job.payload['script_id'])
+    Script.objects.filter(pk=sc.pk).update(status='generating', error='')
+    try:
+        production.run(sc, rep, only=job.payload.get('only'), until=job.payload.get('until'),
+                       force=set(job.payload.get('force') or ()))
+    except JobCancelled:
+        Script.objects.filter(pk=sc.pk).update(status='ready' if (sc.data or {}).get('scenes') else 'draft')
+        raise
+
+
 def _register_builtin():
     for kind, label in (('full', 'Stream Clipper: обработка'), ('resume', 'Stream Clipper: продолжение'),
                         ('reprocess', 'Stream Clipper: заново'), ('render', 'Stream Clipper: рендер клипов')):
@@ -242,6 +256,8 @@ def _register_builtin():
     register('timeline_render', _timeline_job, label='Рендер Timeline IR', needs_project=False)
     register('script', _script_job, label='Сценарий (AI Script Generator)', resource='light', needs_project=False)
     register('media', _media_job, label='Изображения и озвучка (3C)', resource='heavy', needs_project=False)
+    register('production', _production_job, label='Cartoon Studio: видео из идеи (3D)', resource='heavy',
+             needs_project=False)
 
 
 # ---------------------------------------------------------------- DB helpers (SQLite: retry on "locked")
@@ -335,6 +351,8 @@ class Reporter:
         self.skipped.update(keys)
 
     def _overall(self):
+        if getattr(self, 'overall_fn', None) is not None:      # jobs with their own stage list (3D production)
+            return self.overall_fn()
         keys = [k for k in STAGE_KEYS if k not in self.skipped]
         total = sum(w for k, _, w in STAGES if k in keys) or 1
         done = 0.0
