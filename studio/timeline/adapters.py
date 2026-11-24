@@ -91,6 +91,8 @@ def _words(transcript, start, end, censor):
 def clip_timeline(*, project_id, clip_id, source_name, fingerprint, clip_start, clip_end, plan, opts, vinfo,
                   render_info, transcript, title=''):
     """Timeline IR of a clip rendered by the current Stream Clipper renderer (validated)."""
+    if vinfo.get('duration'):                    # a clip may end a few ms past the probed source length
+        clip_end = min(float(clip_end), float(vinfo['duration']))
     L = round(float(clip_end) - float(clip_start), 3)
     W, H = exports.dims(opts)
     fps = render_info.get('fps')

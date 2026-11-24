@@ -169,12 +169,39 @@ def status(request, pk):
     jobs.reap(pk)
     p.refresh_from_db()
     clips = [_clip_json(c, p) for c in p.clips.order_by('position', '-score')]
+    job = p.jobs.order_by('-created_at').first()
+    from . import sysload
     return JsonResponse({
+        'job': _live_info(job), 'load': sysload.snapshot() if job and job.status == Job.RUNNING else None,
         'status': p.status, 'progress': p.progress, 'message': p.message, 'error': p.error, 'stage': p.stage,
         'stage_progress': p.stage_progress, 'stages': _stage_states(p), 'active': jobs.is_active(pk),
         'cancel_requested': p.cancel_requested, 'mode': p.edit_mode, 'source_url': _file_url(p.source),
         'source_duration': p.source_duration, 'transcript_ready': bool(p.transcript),
         'transcript_meta': p.transcript_meta, 'analysis': _analysis_summary(p), 'clips': clips})
+
+
+def _live_info(job):
+    """Live operations of a job with elapsed / remaining time and how long ago it last showed signs of life."""
+    if job is None:
+        return None
+    from django.utils import timezone
+    act = dict(job.activity or {})
+    beat = (timezone.now() - job.heartbeat_at).total_seconds() if job.heartbeat_at else None
+    if job.status == Job.RUNNING and act.get('at') and act.get('ops'):
+        lag = max(0.0, timezone.now().timestamp() - act['at'])     # snapshot age: advance the clocks for the UI
+        for o in act['ops']:
+            o['elapsed'] = round((o.get('elapsed') or 0) + lag, 1)
+            if o.get('eta') is not None:
+                o['eta'] = round(max(0.0, o['eta'] - lag), 1)
+    return {'id': job.pk, 'status': job.status, 'ops': act.get('ops') or [], 'timings': act.get('timings') or {},
+            'stalled_for': act.get('stalled_for'), 'heartbeat_age': None if beat is None else round(beat, 1),
+            'alive': job.status == Job.RUNNING and beat is not None and beat < 3 * jobs.HEARTBEAT_SECONDS + 5,
+            'run_seconds': round(job.run_seconds, 1)}
+
+
+def system_load(request):
+    from . import sysload
+    return JsonResponse(sysload.snapshot())
 
 
 def _analysis_summary(p):
@@ -443,7 +470,7 @@ def _job_json(j, now):
             'stage': j.stage, 'stage_label': dict((k, l) for k, l, _ in jobs.STAGES).get(j.stage, j.stage),
             'stage_progress': j.stage_progress, 'progress': j.progress, 'message': j.message, 'error': j.error[-600:],
             'attempts': j.attempts, 'max_attempts': j.max_attempts, 'checkpoints': sorted(j.checkpoints or {}),
-            'pause_requested': j.pause_requested, 'cancel_requested': j.cancel_requested,
+            'pause_requested': j.pause_requested, 'cancel_requested': j.cancel_requested, 'live': _live_info(j),
             'created_at': j.created_at.isoformat(), 'finished_at': j.finished_at and j.finished_at.isoformat(),
             'elapsed': round(elapsed, 1)}
 
@@ -460,8 +487,10 @@ def jobs_list(request):
     now = timezone.now()
     live = list(Job.objects.filter(status__in=Job.LIVE).order_by('-priority', 'created_at'))
     done = list(Job.objects.exclude(status__in=Job.LIVE).order_by('-updated_at')[:50])
+    from . import sysload
     return JsonResponse({'live': [_job_json(j, now) for j in live], 'recent': [_job_json(j, now) for j in done],
-                         'max_jobs': jobs.max_heavy()})
+                         'max_jobs': jobs.max_heavy(),
+                         'load': sysload.snapshot() if any(j.status == Job.RUNNING for j in live) else None})
 
 
 @require_POST

@@ -90,6 +90,7 @@ class Job(models.Model):
     started_at = models.DateTimeField(null=True, blank=True)   # start of the current run
     finished_at = models.DateTimeField(null=True, blank=True)
     run_seconds = models.FloatField(default=0)                 # processing time of finished runs
+    activity = models.JSONField(default=dict, blank=True)     # live operations, ETA, stage timings (UI)
     updated_at = models.DateTimeField(auto_now=True)
 
     class Meta:

@@ -39,6 +39,7 @@ function render(d) {
   }
   const act = d.status === 'processing' || d.status === 'fetching' || d.status === 'queued';
   $('submsg').textContent = act && d.stage_progress != null ? `Текущий этап: ${Math.round(d.stage_progress * 100)}%` : (act ? 'Идёт этап без точного прогресса — индикатор показывает активность.' : '');
+  $('liveops').replaceChildren(window.renderLive ? renderLive(d.job, d.load) : '');
   const err = $('error'); err.style.display = d.error ? 'block' : 'none'; err.textContent = d.error || '';
   const actions = $('actions'); actions.replaceChildren();
   if (act) actions.append(h('button', {class: 'danger', text: d.cancel_requested ? 'Останавливаем…' : '■ Остановить', disabled: d.cancel_requested, onclick: cancel}));

@@ -4,7 +4,7 @@
 <div class="row" style="justify-content:space-between;margin-bottom:10px"><div><div class="eyebrow">PROJECT #{{ project.pk }}</div><h1 style="font-size:26px">{{ project.title }}</h1></div><span id="statusbadge" class="badge">…</span></div>
 <div class="panel" id="progresspanel">
 <div class="steps" id="steps">{% for key, label, w in stages %}<div class="step" data-key="{{ key }}"><span class="n">{{ forloop.counter }}</span><b>{{ label }}</b><div class="bar"></div></div>{% endfor %}</div>
-<div class="msg" id="message">Загружаем статус…</div><div class="hint" id="submsg"></div>
+<div class="msg" id="message">Загружаем статус…</div><div class="hint" id="submsg"></div><div id="liveops"></div>
 <div id="error" class="error" style="display:none"></div>
 <div class="actions" id="actions"></div></div>
 <section id="reviewpanel" class="panel" style="display:none"><h2>Найденные фрагменты — предпросмотр</h2>
@@ -33,4 +33,4 @@
 <div id="dlgerr" class="error" style="display:none"></div>
 <div class="actions"><button class="primary" id="d_go" type="button">Перемонтировать</button><button value="cancel" type="submit" class="secondary">Закрыть</button></div></form></dialog>
 {% endblock %}
-{% block scripts %}<script>window.CF={pid:{{ project.pk }}};</script><script src="/static/studio/project.js"></script>{% endblock %}
+{% block scripts %}<script>window.CF={pid:{{ project.pk }}};</script><script src="/static/studio/live.js"></script><script src="/static/studio/project.js"></script>{% endblock %}

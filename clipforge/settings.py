@@ -30,6 +30,9 @@ MAX_CONCURRENT_JOBS = max(1, int(os.getenv('CLIPFORGE_MAX_JOBS', '1')))
 JOB_STALE_SECONDS = int(os.getenv('CLIPFORGE_JOB_STALE_SECONDS', '30'))       # no heartbeat this long -> interrupted
 JOB_MAX_ATTEMPTS = int(os.getenv('CLIPFORGE_JOB_MAX_ATTEMPTS', '3'))          # automatic restarts after crashes
 JOB_AUTO_RESUME = os.getenv('CLIPFORGE_JOB_AUTO_RESUME', '1') == '1'
+JOB_STALL_WARN_SECONDS = int(os.getenv('CLIPFORGE_JOB_STALL_WARN', '600'))   # UI warning: no progress this long
+FFMPEG_STALL_SECONDS = int(os.getenv('CLIPFORGE_FFMPEG_STALL', '300'))        # kill ffmpeg that produces nothing this long
+HW_DECODE = os.getenv('CLIPFORGE_HWDECODE', 'auto')                            # NVDEC decoding: auto | off
 # Tests never download models (they use a model that is already there, or the heuristic fallback)
 import sys as _sys
 SOUND_MODEL_DOWNLOAD = not (len(_sys.argv) > 1 and _sys.argv[1] == 'test') and os.getenv('CLIPFORGE_SOUND_DOWNLOAD', '1') == '1'

@@ -466,7 +466,57 @@ def clip_text(segments, start, end):
     return ' '.join(s['text'] for s in segments if s['end'] > start and s['start'] < end)
 
 
-def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, wav=None):
+class BackgroundScreenScan:
+    """The whole-video screen scan runs in a thread from the start of the job, next to audio extraction, Whisper
+    and the sound classifier (it only needs the source file). Progress shows up as its own operation; a partial
+    result is cached, so a pause, crash or cancel continues where it stopped."""
+
+    def __init__(self, source, duration, cache, rep):
+        import threading
+        self.result = None
+        self.error = None
+        self.info = None
+        self.done = threading.Event()
+        self._stop = threading.Event()
+        self._rep = rep
+        self._args = (source, duration, Path(cache))
+        rep.op('screen', 'Анализ экрана: подготовка...', frac=0.0)
+        threading.Thread(target=self._run, daemon=True, name='screen-scan').start()
+
+    def _progress(self, frac, info):
+        self.info = info
+        how = 'NVDEC' if info.get('hw') else ('ключевые кадры' if info.get('mode') == 'key' else 'CPU, 1 кадр/с')
+        self._rep.op('screen', f'Анализ экрана ({how}): {int(frac * 100)}%', frac=frac)
+
+    def _run(self):
+        from . import analysis_cache as ac
+        source, duration, cache = self._args
+        try:
+            sp = motion_analysis.scan_screen(source, duration, cancel=lambda: self._stop.is_set() or
+                                             self._rep.cancelled(), progress=self._progress,
+                                             part_path=str(cache / 'screen.part.npz'))
+            if sp is not None:
+                ac.save_npz(cache / 'screen.npz', **motion_analysis.screen_to_arrays(sp))
+            self.result = sp
+        except BaseException as exc:          # reported to the main thread in wait()
+            self.error = exc
+        finally:
+            self._rep.op('screen', done=True)
+            self.done.set()
+
+    def stop(self):
+        self._stop.set()
+        self.done.wait(20)
+
+    def wait(self, rep):
+        while not self.done.wait(0.5):
+            rep.check()
+        if self.error is not None:
+            raise self.error
+        return self.result
+
+
+def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, wav=None, screen_job=None):
     """Audio profile, keyframe screen scan and a lazy gameplay-motion probe for the multimodal ranker.
 
     Results are stored in / loaded from the source's analysis cache (`cache` dir), so re-picking moments or
@@ -510,10 +560,17 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, 
         try:
             hit = ac.load_npz(Path(cache) / 'screen.npz') if cache else None
             screen = motion_analysis.screen_from_arrays(hit) if hit else None
-            if screen is None:
+            if screen is None and screen_job is not None:
+                if rep and not screen_job.done.is_set():
+                    rep.frac(0.65, 'Смотрим на экран: смерти, провалы, вспышки, смены сцен (идёт параллельно)...')
+                screen = screen_job.wait(rep)
+            elif screen is None:
                 if rep:
                     rep.frac(0.65, 'Смотрим на экран: смерти, провалы, вспышки, смены сцен...')
-                screen = motion_analysis.scan_keyframes(source, duration, cancel=cancel)
+                screen = motion_analysis.scan_screen(
+                    source, duration, cancel=cancel,
+                    progress=(lambda f, i: rep.frac(0.65 + 0.2 * f, f'Смотрим на экран: {int(f * 100)}%'))
+                    if rep else None, part_path=str(Path(cache) / 'screen.part.npz') if cache else None)
                 if screen is not None and cache:
                     ac.save_npz(Path(cache) / 'screen.npz', **motion_analysis.screen_to_arrays(screen))
         except JobCancelled:
@@ -526,7 +583,10 @@ def highlight_signals(source, duration, opts, vinfo=None, rep=None, cache=None, 
         def motion(spans):
             if rep:
                 rep.frac(0.85, 'Оцениваем динамику геймплея у лучших кандидатов...')
-            return motion_analysis.analyze_spans(source, spans, vinfo['width'], vinfo['height'], cancel=cancel)
+            return motion_analysis.analyze_spans(
+                source, spans, vinfo['width'], vinfo['height'], cancel=cancel,
+                progress=(lambda f: rep.frac(0.85 + 0.15 * f, f'Оцениваем динамику геймплея у лучших кандидатов: '
+                                                              f'{int(f * 100)}%')) if rep else None)
     highlight_signals.last_screen = screen
     return audio, motion, notes
 
@@ -565,12 +625,14 @@ def _sound_timeline(source, wav, duration, cache, rep, cancel, notes):
         return None
 
 
-def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None, cache=None, wav=None):
+def pick_highlights(segments, duration, p, opts, source=None, vinfo=None, rep=None, cache=None, wav=None,
+                    screen_job=None):
     """New ranker first; the proven v4 algorithm is the fallback when it errors or finds nothing."""
     if opts['highlight_engine'] == 'smart':
         screen = None
         try:
-            audio, motion, _ = highlight_signals(source, duration, opts, vinfo, rep, cache=cache, wav=wav)
+            audio, motion, _ = highlight_signals(source, duration, opts, vinfo, rep, cache=cache, wav=wav,
+                                                 screen_job=screen_job)
             screen = highlight_signals.last_screen
         except JobCancelled:
             raise
@@ -770,6 +832,18 @@ def _run_full(pk, rep, payload):
     set_state(pk, source_duration=duration, source_fingerprint=fp, status='processing')
     p.refresh_from_db()
     cache, wav, analysis = _source_analysis(p, source, duration, vinfo, fp, rep)
+    screen_job = None
+    if (opts['highlight_engine'] == 'smart' and opts.get('highlight_motion', True) and cache
+            and not (Path(cache) / 'screen.npz').is_file() and not _resumed_clips(p, rep)):
+        screen_job = BackgroundScreenScan(source, duration, cache, rep)
+    try:
+        _run_full_rest(p, pk, rep, payload, opts, source, duration, vinfo, fp, cache, wav, analysis, screen_job)
+    finally:
+        if screen_job is not None:
+            screen_job.stop()
+
+
+def _run_full_rest(p, pk, rep, payload, opts, source, duration, vinfo, fp, cache, wav, analysis, screen_job):
     segments = _get_transcript(p, source, duration, fp, rep, wav=wav)
     p.refresh_from_db()
     rep.checkpoint('transcript', segments=len(segments or []))
@@ -780,7 +854,8 @@ def _run_full(pk, rep, payload):
         return
     analysis['language'] = (p.transcript_meta or {}).get('detected_language') or p.language
     rep.stage('highlights', 'Ищем интересные моменты...', frac=None)
-    selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep, cache=cache, wav=wav)
+    selected = pick_highlights(segments, duration, p, opts, source=source, vinfo=vinfo, rep=rep, cache=cache, wav=wav,
+                               screen_job=screen_job)
     analysis['candidates'] = [{'start': c['start'], 'end': c['end'], 'interest': (c.get('scores') or {}).get('interest'),
                                'engine': c.get('engine')} for c in selected]
     set_state(pk, analysis=analysis)

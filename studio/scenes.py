@@ -60,27 +60,62 @@ def detect_faces_gray(img, min_size=24):
 
 
 # ------------------------------------------------------------------ frame sampling
-def sample_frames(source, start, end, src_w, src_h, fps=SAMPLE_FPS, width=SAMPLE_W, cancel=None):
-    """Yield (t_abs, bgr ndarray) using an ffmpeg raw pipe. Works for any codec ffmpeg can decode."""
+def sample_frames(source, start, end, src_w, src_h, fps=SAMPLE_FPS, width=SAMPLE_W, cancel=None, hw=None):
+    """Yield (t_abs, bgr ndarray) using an ffmpeg raw pipe. Works for any codec ffmpeg can decode.
+
+    Long AV1/VP9 streams have sparse keyframes, so every seek decodes seconds of 1080p60 video: on an NVIDIA GPU
+    that runs on NVDEC (bit-exact, only the sampled frames come back to the CPU for the same area scaling).
+    A failed GPU start falls back to the CPU; a stalled ffmpeg is killed by the watchdog."""
+    from . import accel
+    if hw is None:
+        hw = accel.nvdec_ok(source)
+    if hw:
+        got = 0
+        try:
+            for item in _sample(source, start, end, src_w, src_h, fps, width, cancel, True):
+                got += 1
+                yield item
+            return
+        except RuntimeError as exc:
+            from .procutil import StallError
+            if got or isinstance(exc, StallError):
+                raise
+            log.warning('NVDEC sampling failed (%s); decoding on the CPU', str(exc)[:200])
+    yield from _sample(source, start, end, src_w, src_h, fps, width, cancel, False)
+
+
+def _sample(source, start, end, src_w, src_h, fps, width, cancel, hw):
+    from . import accel
+    from .procutil import Watchdog
     h = max(2, int(round(width * src_h / src_w / 2)) * 2)
-    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-ss', f'{start:.3f}', '-t', f'{end - start:.3f}', '-i',
-           str(source), '-an', '-sn', '-vf', f'fps={fps},scale={width}:{h}:flags=area', '-pix_fmt', 'bgr24',
-           '-f', 'rawvideo', 'pipe:1']
+    pre = ['-hwaccel', 'cuda', '-hwaccel_output_format', 'cuda'] if hw else []
+    down = f'hwdownload,format={accel.download_format(source)},' if hw else ''
+    cmd = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-nostdin'] + pre + [
+        '-ss', f'{start:.3f}', '-t', f'{end - start:.3f}', '-i', str(source), '-an', '-sn',
+        '-vf', f'fps={fps},{down}scale={width}:{h}:flags=area', '-pix_fmt', 'bgr24', '-f', 'rawvideo', 'pipe:1']
     size = width * h * 3
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, creationflags=_flags())
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err, creationflags=_flags())
+        dog = Watchdog(proc, f'Кадры {start:.0f}-{end:.0f} с' + (' (NVDEC)' if hw else ''))
+        k = 0
         try:
-            k = 0
             while True:
                 if cancel and cancel():
                     raise JobCancelled()
                 buf = proc.stdout.read(size)
                 if len(buf) < size:
                     break
+                dog.touch()
                 yield start + k / fps, np.frombuffer(buf, np.uint8).reshape(h, width, 3)
                 k += 1
+            proc.wait(timeout=30)
         finally:
+            dog.stop()
             kill_tree(proc)
+        dog.check()
+        if hw and proc.returncode and k == 0:
+            err.seek(0)
+            raise RuntimeError(err.read().decode('utf-8', 'replace')[-300:] or 'NVDEC sampling failed')
 
 
 # ------------------------------------------------------------------ per-frame features

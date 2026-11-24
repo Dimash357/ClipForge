@@ -32,6 +32,55 @@ def kill_tree(proc):
             pass
 
 
+class StallError(RuntimeError):
+    """A child process stopped producing output for too long (hung decoder, stuck disk, driver problem)."""
+
+
+def stall_seconds():
+    try:
+        from django.conf import settings
+        return int(getattr(settings, 'FFMPEG_STALL_SECONDS', 300))
+    except Exception:
+        return 300
+
+
+class Watchdog:
+    """Kills `proc` (whole tree) when touch() was not called for `stall` seconds.
+
+    Readers call touch() on every chunk of output; after the read loop, check() turns a watchdog kill into a
+    clear StallError instead of a silently truncated result. A hung ffmpeg can therefore never block a job forever."""
+
+    def __init__(self, proc, what, stall=None):
+        self.proc, self.what = proc, what
+        self.stall = stall or stall_seconds()
+        self.last = time.monotonic()
+        self.fired = False
+        self._stop = threading.Event()
+        threading.Thread(target=self._run, daemon=True, name='ffmpeg-watchdog').start()
+
+    def touch(self):
+        self.last = time.monotonic()
+
+    def _run(self):
+        while not self._stop.wait(1.0):
+            if self.proc.poll() is not None:
+                return
+            if time.monotonic() - self.last > self.stall:
+                self.fired = True
+                log.error('%s: no output for %d s, killing ffmpeg (pid %s)', self.what, self.stall, self.proc.pid)
+                kill_tree(self.proc)
+                return
+
+    def stop(self):
+        self._stop.set()
+
+    def check(self):
+        if self.fired:
+            raise StallError(f'{self.what}: FFmpeg не выдавал данных {self.stall} с и был остановлен. Возможные '
+                             f'причины: повреждённый файл, зависший диск или драйвер видеокарты. Нажмите «Продолжить» — '
+                             f'уже готовые шаги возьмутся из кэша.')
+
+
 def _flags():
     return subprocess.CREATE_NEW_PROCESS_GROUP if os.name == 'nt' else 0
 
@@ -59,6 +108,8 @@ def run_ffmpeg(args, duration=None, on_progress=None, cancel_check=None, timeout
         threading.Thread(target=pump, daemon=True).start()
         started = time.monotonic()
         done = False
+        dog = Watchdog(proc, 'ffmpeg')
+        last_out = None
         try:
             while not done:
                 if cancel_check and cancel_check():
@@ -72,6 +123,9 @@ def run_ffmpeg(args, duration=None, on_progress=None, cancel_check=None, timeout
                 if line is None:
                     done = True
                     continue
+                if line.startswith('out_time_us=') and line != last_out:       # real progress, not just a heartbeat
+                    last_out = line
+                    dog.touch()
                 if on_progress and duration and line.startswith('out_time_us='):
                     try:
                         sec = int(line.split('=')[1]) / 1e6
@@ -82,6 +136,9 @@ def run_ffmpeg(args, duration=None, on_progress=None, cancel_check=None, timeout
         except BaseException:
             kill_tree(proc)
             raise
+        finally:
+            dog.stop()
+        dog.check()
         if proc.returncode:
             err.seek(0)
             tail = err.read()[-1700:].decode('utf-8', errors='replace')

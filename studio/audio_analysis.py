@@ -396,7 +396,10 @@ def analyze_file(source, duration=None, cancel=None, progress=None, timeout=3600
     total = 0
     t_start = time.monotonic()
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, creationflags=_flags())
+        from .procutil import Watchdog
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err,
+                                creationflags=_flags())
+        dog = Watchdog(proc, 'Анализ звука')
         try:
             while True:
                 if cancel and cancel():
@@ -406,6 +409,7 @@ def analyze_file(source, duration=None, cancel=None, progress=None, timeout=3600
                 buf = proc.stdout.read(chunk * 2)
                 if not buf:
                     break
+                dog.touch()
                 x = np.frombuffer(buf[:len(buf) // 2 * 2], np.int16).astype(np.float32) / 32768.0
                 total += len(x)
                 x = np.concatenate([tail, x])
@@ -419,7 +423,9 @@ def analyze_file(source, duration=None, cancel=None, progress=None, timeout=3600
                     progress(min(1.0, total / SR / duration))
             proc.wait(timeout=30)
         finally:
+            dog.stop()
             kill_tree(proc)
+        dog.check()
         if proc.returncode not in (0, None) and total == 0:
             err.seek(0)
             msg = err.read().decode('utf-8', 'replace')

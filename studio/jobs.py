@@ -204,6 +204,12 @@ class Reporter:
         self._last_write = 0.0
         self._stage_frac = None
         self._first_frac = True
+        self._message = ''
+        self._stage_started = None
+        self._ops = {}                          # parallel operations: key -> {'label', 'frac', 'started', ...}
+        self._ops_lock = threading.Lock()
+        self.last_progress = time.monotonic()
+        self.timings = dict((job.activity or {}).get('timings') or {}) if job is not None else {}
 
     # --- cancellation / pause
     def cancelled(self):
@@ -259,8 +265,52 @@ class Reporter:
             done += w
         return int(max(0, min(99, round(100 * done / total))))
 
+    # --- live operations (shown with elapsed / remaining time)
+    def op(self, key, label=None, frac=None, done=False, **info):
+        """Report a side operation (e.g. the screen scan running next to Whisper). Thread-safe."""
+        now = time.time()
+        with self._ops_lock:
+            if done:
+                o = self._ops.pop(key, None)
+                if o:
+                    self.timings[key] = round(now - o['started'], 1)
+            else:
+                o = self._ops.setdefault(key, {'label': label or key, 'frac': None, 'started': now})
+                if label:
+                    o['label'] = label
+                if frac is not None:
+                    o['frac'] = max(0.0, min(1.0, float(frac)))
+                o['updated'] = now
+                o.update(info)
+        self.last_progress = time.monotonic()
+
+    @staticmethod
+    def _eta(o, now):
+        el = now - o['started']
+        f = o.get('frac')
+        eta = el * (1 - f) / f if f and f >= 0.02 and el >= 3 and f < 1 else None
+        return dict(o, elapsed=round(el, 1), eta=None if eta is None else round(eta, 1))
+
+    def activity(self):
+        now = time.time()
+        ops = []
+        if self.current:
+            ops.append(self._eta({'key': 'stage', 'label': self._message or self.current, 'frac': self._stage_frac,
+                                  'started': self._stage_started or now, 'stage': self.current}, now))
+        with self._ops_lock:
+            ops += [self._eta(dict(o, key=k), now) for k, o in self._ops.items()]
+        idle = time.monotonic() - self.last_progress
+        return {'ops': ops, 'timings': self.timings, 'at': now,
+                'stalled_for': round(idle) if idle > float(getattr(settings, 'JOB_STALL_WARN_SECONDS', 600)) else None}
+
     def stage(self, key, message, status='processing', frac=None):
         self.safe_point()
+        if self.current and self._stage_started and key != self.current:
+            took = round(time.time() - self._stage_started, 1)
+            self.timings[self.current] = round(self.timings.get(self.current, 0) + took, 1)
+            log.info('stage %s took %.1f s', self.current, took)
+        if key != self.current or self._stage_started is None:
+            self._stage_started = time.time()
         self.current = key
         self._stage_frac = frac
         self._first_frac = True
@@ -271,22 +321,26 @@ class Reporter:
         self._write(self.current, message, None)
 
     def frac(self, value, message=None):
-        """Report a *real* fraction of the current stage (0..1)."""
+        """Report a *real* fraction of the current stage (0..1). A new message is always shown at once."""
         self._stage_frac = max(0.0, min(1.0, float(value)))
         now = time.monotonic()
-        if self._first_frac or now - self._last_write >= 0.6 or self._stage_frac >= 1.0:
+        self.last_progress = now
+        changed = message is not None and message.split(':')[0] != (self._message or '').split(':')[0]
+        if self._first_frac or changed or now - self._last_write >= 0.6 or self._stage_frac >= 1.0:
             self._first_frac = False
             self._write(self.current, message, None)
 
     def _write(self, key, message, status, force=False):
         self._last_write = time.monotonic()
+        self.last_progress = self._last_write
         fields = {'stage': key or '', 'stage_progress': self._stage_frac, 'progress': self._overall()}
         if message is not None:
             fields['message'] = message
+            self._message = message
         if self.pk:
             set_state(self.pk, **fields, **({'status': status} if status else {}))
         if self.job_id:
-            job_update(self.job_id, heartbeat_at=timezone.now(), **fields)
+            job_update(self.job_id, heartbeat_at=timezone.now(), activity=self.activity(), **fields)
 
 
 # ---------------------------------------------------------------- queue API
@@ -571,12 +625,13 @@ def _worker_loop():
             close_old_connections()
 
 
-def _beat(job_id, key, token, stop):
-    """Heartbeat + pick up cancel/pause requests made by other processes (or the queue page)."""
+def _beat(job_id, key, token, stop, rep=None):
+    """Heartbeat (+ live operations for the UI) and pick up cancel/pause requests made by other processes."""
     from .models import Job
     while not stop.wait(HEARTBEAT_SECONDS):
         try:
-            job_update(job_id, only_worker=token, heartbeat_at=timezone.now())
+            extra = {'activity': rep.activity()} if rep is not None else {}
+            job_update(job_id, only_worker=token, heartbeat_at=timezone.now(), **extra)
             row = Job.objects.filter(pk=job_id).values('cancel_requested', 'pause_requested').first() or {}
             if row.get('cancel_requested') and key in _cancel:
                 _cancel[key].set()
@@ -598,10 +653,10 @@ def _execute(job, token):
     if job.cancel_requested:
         _cancel[key].set()
     stop = threading.Event()
-    beat = threading.Thread(target=_beat, args=(job.pk, key, token, stop), daemon=True, name=f'beat-{job.pk}')
+    rep = Reporter(job.project_id, job=job)
+    beat = threading.Thread(target=_beat, args=(job.pk, key, token, stop, rep), daemon=True, name=f'beat-{job.pk}')
     beat.start()
     t0 = time.monotonic()
-    rep = Reporter(job.project_id, job=job)
     final = {}
     try:
         try:
@@ -637,7 +692,10 @@ def _execute(job, token):
         cur = Job.objects.filter(pk=job.pk).values_list('run_seconds', flat=True).first() or 0.0
         if final.get('status') in (Job.COMPLETED, Job.FAILED, Job.CANCELLED):
             final['finished_at'] = timezone.now()
+        if rep.current and rep._stage_started:
+            rep.timings[rep.current] = round(rep.timings.get(rep.current, 0) + time.time() - rep._stage_started, 1)
         job_update(job.pk, only_worker=token, worker='', run_seconds=cur + (time.monotonic() - t0),
+                   activity={'ops': [], 'timings': rep.timings, 'at': time.time()},
                    **(final or {'status': Job.INTERRUPTED, 'message': 'Прервано'}))
         with _lock:
             _active.pop(key, None)

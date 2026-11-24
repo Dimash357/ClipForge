@@ -2,7 +2,7 @@ const csrf = () => decodeURIComponent((document.cookie.split('; ').find(x => x.s
 const post = (url, body) => fetch(url, {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRFToken': csrf()}, body: JSON.stringify(body || {})});
 function h(tag, a, ...kids) { const e = document.createElement(tag); for (const [k, v] of Object.entries(a || {})) { if (k === 'text') e.textContent = v; else if (k.startsWith('on')) e.addEventListener(k.slice(2), v); else if (v !== false && v != null) e.setAttribute(k, v === true ? '' : v); } e.append(...kids.filter(Boolean)); return e; }
 const dur = s => { s = Math.round(s); const m = Math.floor(s / 60), x = s % 60; return m >= 60 ? `${Math.floor(m / 60)} ч ${m % 60} мин` : (m ? `${m} мин ${x} с` : `${x} с`); };
-let timer = null;
+let timer = null, LOAD = null;
 
 async function act(id, action, body) {
   const r = await post(`/api/jobs/${id}/${action}/`, body);
@@ -32,6 +32,7 @@ function card(j) {
     h('small', {class: 'muted', text: `#${j.id} · ${j.label} · приоритет ${j.priority} · попытка ${j.attempts}/${j.max_attempts} · время ${dur(j.elapsed)} · создана ${new Date(j.created_at).toLocaleString()}`}),
     live || j.status === 'completed' ? bar : null,
     h('div', {text: [pct, j.message].filter(Boolean).join(' — ')}),
+    window.renderLive && (j.status === 'running' || Object.keys((j.live || {}).timings || {}).length) ? renderLive(j.live, LOAD) : null,
     j.checkpoints.length ? h('small', {class: 'muted', text: 'Готовые шаги: ' + j.checkpoints.join(', ')}) : null,
     j.error ? h('pre', {class: 'error', style: 'white-space:pre-wrap;max-height:120px;overflow:auto', text: j.error}) : null,
     btns);
@@ -41,6 +42,7 @@ async function load() {
   clearTimeout(timer);
   try {
     const d = await (await fetch('/api/jobs/')).json();
+    LOAD = d.load;
     document.getElementById('live').replaceChildren(...(d.live.length ? d.live.map(card) : [h('p', {class: 'muted', text: 'Очередь пуста.'})]));
     document.getElementById('recent').replaceChildren(...d.recent.map(card));
     timer = setTimeout(load, d.live.some(j => j.status === 'running') ? 1500 : 5000);

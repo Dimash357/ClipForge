@@ -164,7 +164,10 @@ def classify_file(path, duration=None, cancel=None, progress=None, chunk_frames=
     buf = np.zeros(0, np.float32)
     done = 0
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=err, creationflags=_flags())
+        from .procutil import Watchdog
+        proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=err,
+                                creationflags=_flags())
+        dog = Watchdog(proc, 'Распознавание звуков')
         try:
             eof = False
             while not eof or len(buf) >= WIN_SAMPLES:
@@ -175,6 +178,7 @@ def classify_file(path, duration=None, cancel=None, progress=None, chunk_frames=
                     if not raw:
                         eof = True
                         break
+                    dog.touch()
                     buf = np.concatenate([buf, np.frombuffer(raw[:len(raw) // 2 * 2], np.int16).astype(np.float32) / 32768.0])
                 if len(buf) < WIN_SAMPLES:
                     break
@@ -190,7 +194,9 @@ def classify_file(path, duration=None, cancel=None, progress=None, chunk_frames=
                 if eof and len(buf) < WIN_SAMPLES:
                     break
         finally:
+            dog.stop()
             kill_tree(proc)
+    dog.check()
     if not parts['speech']:
         return None
     return SoundTimeline({g: np.concatenate(v) for g, v in parts.items()})

@@ -228,8 +228,13 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
             'transition': transition, 'loudness': loud_info, 'auto': plan.get('auto'), 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
                                                                   for k, v in plan['cam'].items()}}
 
-    def cmd_for(enc):
-        c = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y', '-ss', f'{clip["start"]:.3f}', '-i', str(source),
+    from . import accel
+    hwdec = accel.decode_args(source)              # NVDEC: bit-exact decoding on the GPU, same filters on the CPU
+    info['decoder'] = 'NVDEC' if hwdec else 'CPU'
+
+    def cmd_for(enc, hw=True):
+        c = ['ffmpeg', '-hide_banner', '-loglevel', 'error', '-y'] + (hwdec if hw else []) + [
+             '-ss', f'{clip["start"]:.3f}', '-i', str(source),
              '-t', f'{L:.3f}', '-filter_complex', graph, '-map', '[vout]', '-map', '0:a:0?']
         c += exports.encoder_args(enc, opts)
         if af:
@@ -239,14 +244,24 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
 
     cancel = rep.cancelled if rep else None
     try:
-        run_ffmpeg(cmd_for(encoder), duration=L, on_progress=on_progress, cancel_check=cancel, timeout=3600, cwd=str(temp))
+        try:
+            run_ffmpeg(cmd_for(encoder), duration=L, on_progress=on_progress, cancel_check=cancel, timeout=3600,
+                       cwd=str(temp))
+        except RuntimeError as exc:
+            from .procutil import StallError
+            if not hwdec or isinstance(exc, StallError):
+                raise
+            log.warning('NVDEC decoding failed (%s); decoding on the CPU', str(exc)[:200])
+            info['decoder'] = 'CPU (откат: NVDEC не сработал)'
+            run_ffmpeg(cmd_for(encoder, hw=False), duration=L, on_progress=on_progress, cancel_check=cancel,
+                       timeout=3600, cwd=str(temp))
     except RuntimeError as exc:
         if encoder == 'h264_nvenc':
             log.warning('NVENC failed (%s); retrying on CPU', str(exc)[:200])
             info['encoder'], info['encoder_note'] = 'libx264', 'CPU (откат: NVENC не сработал)'
             info['encoder_fallback'] = True
-            run_ffmpeg(cmd_for('libx264'), duration=L, on_progress=on_progress, cancel_check=cancel, timeout=3600,
-                       cwd=str(temp))
+            run_ffmpeg(cmd_for('libx264', hw=False), duration=L, on_progress=on_progress, cancel_check=cancel,
+                       timeout=3600, cwd=str(temp))
         else:
             raise
     return info

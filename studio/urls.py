@@ -8,6 +8,7 @@ urlpatterns = [
     path('system/', views.system, name='system'),
     path('queue/', views.queue, name='queue'),
     path('api/jobs/', views.jobs_list, name='jobs_list'),
+    path('api/system/load/', views.system_load, name='system_load'),
     path('api/jobs/<int:pk>/<str:action>/', views.job_action, name='job_action'),
     path('api/projects/<int:pk>/pause/', views.pause, name='pause'),
     path('api/projects/<int:pk>/status/', views.status, name='status'),
