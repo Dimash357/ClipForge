@@ -320,7 +320,7 @@ class WhisperBatch(SimpleTestCase):
 
     def test_batch_failure_falls_back(self):
         out, calls = self._run('cuda', batched_fails=True)
-        self.assertEqual(calls['batched'], [16])
+        self.assertEqual(calls['batched'], [16, 8])          # out of memory: one retry with half the batch (1D)
         self.assertEqual(calls['seq'], 1)
         self.assertEqual(out[0]['text'], 'раз')
         self.assertEqual(pipeline.transcribe.last_info['batch'], 0)

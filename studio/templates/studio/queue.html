@@ -4,9 +4,10 @@
 <h1 style="font-size:28px">Очередь задач</h1>
 <p class="muted">Задачи хранятся в базе: после закрытия приложения, перезагрузки Windows или сбоя очередь продолжится с последней
 контрольной точки. Одновременно выполняется тяжёлых задач: <b>{{ max_jobs }}</b>. Пауза срабатывает после текущего шага.</p>
+<div class="panel" id="resources" style="padding:14px"><p class="muted">Ресурсы: загрузка…</p></div>
 <h2 style="font-size:18px">Активные</h2>
 <div id="live"><p class="muted">Загрузка…</p></div>
 <h2 style="font-size:18px;margin-top:26px">Недавние</h2>
 <div id="recent"></div>
-<script src="/static/studio/live.js"></script><script src="/static/studio/queue.js"></script>
+<script src="/static/studio/live.js"></script><script src="/static/studio/queue.js"></script><script src="/static/studio/resources.js"></script>
 {% endblock %}

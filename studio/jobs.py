@@ -107,7 +107,11 @@ def stale_seconds():
 
 
 def max_heavy():
-    return max(1, int(getattr(settings, 'MAX_CONCURRENT_JOBS', 1)))
+    """Heavy jobs at once: CLIPFORGE_MAX_JOBS if set, else the resource mode (balanced/low 1, performance 2)."""
+    if os.getenv('CLIPFORGE_MAX_JOBS') or getattr(settings, 'MAX_CONCURRENT_JOBS_FIXED', False):
+        return max(1, int(getattr(settings, 'MAX_CONCURRENT_JOBS', 1)))
+    from . import resources
+    return max(1, int(resources.manager().profile()['heavy_jobs']))
 
 
 # ---------------------------------------------------------------- handlers (extensible)
@@ -654,6 +658,8 @@ def _execute(job, token):
         _cancel[key].set()
     stop = threading.Event()
     rep = Reporter(job.project_id, job=job)
+    from . import resources
+    resources.manager().bind_job(job.pk, job.priority, rep.cancelled)
     beat = threading.Thread(target=_beat, args=(job.pk, key, token, stop, rep), daemon=True, name=f'beat-{job.pk}')
     beat.start()
     t0 = time.monotonic()
@@ -689,6 +695,7 @@ def _execute(job, token):
                           message='Ошибка обработки')
     finally:
         stop.set()
+        resources.manager().unbind_job(job.pk)
         cur = Job.objects.filter(pk=job.pk).values_list('run_seconds', flat=True).first() or 0.0
         if final.get('status') in (Job.COMPLETED, Job.FAILED, Job.CANCELLED):
             final['finished_at'] = timezone.now()

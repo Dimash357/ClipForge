@@ -228,8 +228,15 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
             'transition': transition, 'loudness': loud_info, 'auto': plan.get('auto'), 'cam': plan.get('cam') and {k: (round(v, 3) if isinstance(v, float) else v)
                                                                   for k, v in plan['cam'].items()}}
 
-    from . import accel
+    from . import accel, resources
     hwdec = accel.decode_args(source)              # NVDEC: bit-exact decoding on the GPU, same filters on the CPU
+    lease, use_nvenc, use_nvdec = resources.gpu_media_lease(f'Рендер клипа {clip["start"]:.0f}-{clip["end"]:.0f} с',
+                                                            nvenc=encoder == 'h264_nvenc', nvdec=bool(hwdec))
+    if encoder == 'h264_nvenc' and not use_nvenc:
+        encoder, enc_note = 'libx264', 'CPU libx264 (NVENC занят другой задачей)'
+        info.update(encoder=encoder, encoder_note=enc_note)
+    if not use_nvdec:
+        hwdec = []
     info['decoder'] = 'NVDEC' if hwdec else 'CPU'
 
     def cmd_for(enc, hw=True):
@@ -243,6 +250,12 @@ def render(source, clip, transcript, dest, temp, opts, plan, vinfo, mode, rep=No
         return c
 
     cancel = rep.cancelled if rep else None
+    with lease:
+        _render_run(cmd_for, encoder, hwdec, info, L, on_progress, cancel, temp)
+    return info
+
+
+def _render_run(cmd_for, encoder, hwdec, info, L, on_progress, cancel, temp):
     try:
         try:
             run_ffmpeg(cmd_for(encoder), duration=L, on_progress=on_progress, cancel_check=cancel, timeout=3600,

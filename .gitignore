@@ -25,3 +25,6 @@ ffmpeg/
 
 # downloaded models (YAMNet); studio/models holds the bundled ones
 /models/
+
+# local runtime settings (resource mode)
+clipforge_settings.json

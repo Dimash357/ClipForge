@@ -514,3 +514,30 @@ def job_action(request, pk, action):
     if not ok:
         return JsonResponse({'ok': False, 'error': 'Действие сейчас недоступно для этой задачи.'}, status=409)
     return JsonResponse({'ok': True})
+
+
+# ---------------------------------------------------------------- resource manager (1D)
+@require_GET
+def resources_state(request):
+    from . import resources, sysload
+    return JsonResponse(dict(resources.manager().snapshot(), load=sysload.snapshot()))
+
+
+@require_POST
+def resources_mode(request):
+    from . import resources
+    mgr = resources.manager()
+    if mgr.mode_locked():
+        return JsonResponse({'error': 'Режим задан переменной CLIPFORGE_RESOURCE_MODE.'}, status=409)
+    try:
+        mgr.set_mode(_json_body(request).get('mode'))
+    except ValueError:
+        return JsonResponse({'error': 'Неизвестный режим.'}, status=400)
+    jobs.wake()                     # more heavy slots may be free now
+    return JsonResponse({'ok': True, 'mode': mgr.mode()})
+
+
+@require_POST
+def resources_unload(request):
+    from . import resources
+    return JsonResponse({'ok': True, 'unloaded': resources.manager().unload_models(why='из интерфейса')})

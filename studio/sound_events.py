@@ -52,21 +52,35 @@ def _class_index():
     return {g: [names.index(n) for n in members if n in names] for g, members in GROUPS.items()}
 
 
+MODEL_KEY = ('yamnet', 'cpu')
+MODEL_RAM_MB = 150
+
+
+def _create():
+    import onnxruntime as ort
+    opts = ort.SessionOptions()
+    opts.log_severity_level = 3
+    return ort.InferenceSession(str(model_files.model_path()), opts, providers=['CPUExecutionProvider'])
+
+
+def _model():
+    """The ONNX session through the resource manager: loaded lazily once, shared, unloaded when idle."""
+    from .resources import manager
+    return manager().model(MODEL_KEY, _create, device='cpu', ram_mb=MODEL_RAM_MB, group='audio')
+
+
 def load(download=True, progress=None):
-    """ONNX session or None (no model / no onnxruntime / offline)."""
+    """ONNX session or None (no model / no onnxruntime / offline). Downloads the model file if allowed."""
     global _session
-    if _session is not None:
+    if _session is not None:              # tests / callers may inject a session
         return _session
     try:
         if not model_files.is_ready():
             if not download:
                 return None
             model_files.download(progress=progress)
-        import onnxruntime as ort
-        opts = ort.SessionOptions()
-        opts.log_severity_level = 3
-        _session = ort.InferenceSession(str(model_files.model_path()), opts, providers=['CPUExecutionProvider'])
-        return _session
+        with _model() as session:
+            return session
     except Exception as exc:
         log.warning('sound classifier unavailable (%s); loudness heuristics only', str(exc)[:200])
         return None
@@ -152,9 +166,18 @@ def _run(session, x):
 
 def classify_file(path, duration=None, cancel=None, progress=None, chunk_frames=124):
     """Decode `path` (the cached audio16k.wav, or any media) with ffmpeg and classify it chunk by chunk."""
-    session = load()
-    if session is None:
+    if load() is None:
         return None
+    from contextlib import ExitStack
+    from .resources import manager
+    with ExitStack() as stack:
+        session = _session if _session is not None else stack.enter_context(_model())
+        stack.enter_context(manager().acquire(label='Классификатор звуков', cpu=2,
+                                              cancel=cancel, timeout=600))
+        return _classify(session, path, duration, cancel, progress, chunk_frames)
+
+
+def _classify(session, path, duration, cancel, progress, chunk_frames):
     idx = _class_index()
     step = chunk_frames * HOP_SAMPLES                      # samples per chunk, frame-aligned
     need = step + WIN_SAMPLES - HOP_SAMPLES                # + overlap so frames continue seamlessly

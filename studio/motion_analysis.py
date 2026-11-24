@@ -281,12 +281,14 @@ def _save_part(path, key, rows, done):
 
 
 def workers_for(hw):
-    """Parallel decoders: one ffmpeg uses ~1.5 cores for 1080p60 AV1, so several chunks at once fill the CPU;
-    NVDEC gets two sessions. CLIPFORGE_SCAN_WORKERS overrides."""
+    """Parallel decoders: one ffmpeg uses ~1.5 cores for 1080p60 AV1, so several chunks at once fill the CPU.
+    The resource mode sets the share: NVDEC sessions, or CPU slots (at most 6). CLIPFORGE_SCAN_WORKERS overrides."""
     env = os.getenv('CLIPFORGE_SCAN_WORKERS')
     if env and env.isdigit() and int(env) > 0:
         return int(env)
-    return 2 if hw else max(1, min(6, (os.cpu_count() or 2)))
+    from . import resources
+    cap = resources.manager().capacity()
+    return max(1, cap['nvdec'] if hw and cap['nvdec'] else 2 if hw else min(6, cap['cpu']))
 
 
 def scan_screen(source, duration=None, cancel=None, progress=None, part_path=None, width=64, hw=None):
@@ -350,14 +352,20 @@ def _dense(source, duration, width, t0, hw, cancel, progress, part_path, rate):
         if progress:
             progress(min(1.0, (base + sum(secs.values())) / duration), info)
 
+    from . import resources
+    job = resources.manager().current_job()
+
     def run(i, use_hw):
         out = []
 
         def seen(t):
             secs[i] = max(0.0, min(bounds[i + 1], duration) - bounds[i]) if t is None else max(0.0, t - bounds[i])
-        for t, row in _chunk(source, bounds[i], bounds[i + 1], width, t0, use_hw,
-                             lambda: stop.is_set() or (cancel is not None and cancel()), seen):
-            out.append((t,) + row)
+        with resources.manager().job_context(job):
+            lease, _, use_hw = resources.gpu_media_lease(f'Анализ экрана {bounds[i]:.0f} с', nvdec=use_hw, cpu=1)
+            with lease:
+                for t, row in _chunk(source, bounds[i], bounds[i + 1], width, t0, use_hw,
+                                     lambda: stop.is_set() or (cancel is not None and cancel()), seen):
+                    out.append((t,) + row)
         return out
 
     def run_safe(i):

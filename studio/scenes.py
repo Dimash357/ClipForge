@@ -66,9 +66,17 @@ def sample_frames(source, start, end, src_w, src_h, fps=SAMPLE_FPS, width=SAMPLE
     Long AV1/VP9 streams have sparse keyframes, so every seek decodes seconds of 1080p60 video: on an NVIDIA GPU
     that runs on NVDEC (bit-exact, only the sampled frames come back to the CPU for the same area scaling).
     A failed GPU start falls back to the CPU; a stalled ffmpeg is killed by the watchdog."""
-    from . import accel
+    from . import accel, resources
     if hw is None:
         hw = accel.nvdec_ok(source)
+    lease = None
+    if hw:                                           # an NVDEC session if one is free right now, else the CPU
+        lease, _, hw = resources.gpu_media_lease('Кадры (NVDEC)', nvdec=True, cpu=1, wait=False)
+    with lease or resources.cpu_lease('Кадры', 1, wait=False):
+        yield from _sample_any(source, start, end, src_w, src_h, fps, width, cancel, hw)
+
+
+def _sample_any(source, start, end, src_w, src_h, fps, width, cancel, hw):
     if hw:
         got = 0
         try:

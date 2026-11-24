@@ -120,6 +120,16 @@ def _scene_key(tl, win, paths):
 
 
 def _run(cmd_for, encoder, duration, on_progress, cancel, cwd, report):
+    from .. import resources
+    lease, use_nvenc, _ = resources.gpu_media_lease('Timeline render', nvenc=encoder == 'h264_nvenc')
+    with lease:
+        if encoder == 'h264_nvenc' and not use_nvenc:
+            encoder = 'libx264'
+            report['encoder_note'] = 'CPU libx264 (NVENC занят другой задачей)'
+        return _run_leased(cmd_for, encoder, duration, on_progress, cancel, cwd, report)
+
+
+def _run_leased(cmd_for, encoder, duration, on_progress, cancel, cwd, report):
     try:
         run_ffmpeg(cmd_for(encoder), duration=duration, on_progress=on_progress, cancel_check=cancel, timeout=3600,
                    cwd=cwd)

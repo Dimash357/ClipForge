@@ -38,18 +38,60 @@ def probe(path):
     return duration
 
 
-_model_cache = {}
+class _WhisperCache:
+    """Compatibility handle: Whisper models now live in the resource manager's model registry."""
+
+    def clear(self):
+        from . import resources
+        resources.manager().unload_models(group='whisper', why='cleared')
+
+
+_model_cache = _WhisperCache()
+
+# resident memory of a loaded model (MB, float16 on CUDA / int8 on CPU) and extra working memory per batch item
+WHISPER_MB = {'tiny': 250, 'base': 350, 'small': 900, 'medium': 2100, 'large-v1': 3900, 'large-v2': 3900,
+              'large-v3': 3900, 'large-v3-turbo': 1900, 'turbo': 1900, 'distil-large-v3': 1700}
+
+
+def whisper_memory(name, device, compute, batch):
+    """(model MB, working MB) estimates for the resource manager."""
+    base = WHISPER_MB.get(name, 2100 if 'medium' in name else 3900 if 'large' in name else 900)
+    if device == 'cuda':
+        model = int(base * (0.6 if 'int8' in compute else 1.0))
+        return model, 300 + int(base * 0.06) * max(1, batch or 1)
+    return int(base * 0.6), 400 + int(base * 0.1)
 
 
 def _get_model(name, device, compute):
+    """Create a WhisperModel (the registry in resources.py caches it, see _whisper_model)."""
     from . import gpu_libs
     gpu_libs.register()              # pip-installed CUDA 12 DLLs (install_gpu.bat) on Windows
     from faster_whisper import WhisperModel
-    key = (name, device, compute)
-    if key not in _model_cache:
-        _model_cache.clear()  # keep a single model resident (VRAM / RAM)
-        _model_cache[key] = WhisperModel(name, device=device, compute_type=compute)
-    return _model_cache[key]
+    return WhisperModel(name, device=device, compute_type=compute)
+
+
+def _whisper_model(name, device, compute):
+    """Lazy, shared, pinned while in use; one Whisper size resident at a time; unloaded when memory is needed."""
+    from . import resources
+    mb, _ = whisper_memory(name, device, compute, 0)
+    gpu_known = resources.manager().facts()['vram_total'] > 0
+    return resources.manager().model(
+        ('whisper', name, device, compute), lambda: _get_model(name, device, compute), device=device,
+        vram_mb=mb if (device == 'cuda' and gpu_known) else 0, ram_mb=0 if device == 'cuda' else mb,
+        group='whisper', group_max=1)
+
+
+def _whisper_lease(name, dev, comp, batch, cancel):
+    """Working memory + CPU for one transcription. Waits (cancellable) while another job uses the GPU;
+    Unavailable / timeout -> the caller decodes on the CPU instead."""
+    from . import resources
+    mgr = resources.manager()
+    _, work = whisper_memory(name, dev, comp, batch)
+    gpu_known = mgr.facts()['vram_total'] > 0
+    cpu = 1 if dev == 'cuda' else min(4, mgr.capacity()['cpu'])
+    return mgr.acquire(label=f'Whisper {name} ({dev})', cpu=cpu, vram_mb=work if dev == 'cuda' and gpu_known else 0,
+                       ram_mb=0 if dev == 'cuda' else work, timeout=float(os.getenv('CLIPFORGE_GPU_WAIT', '900')),
+                       cancel=cancel)
 
 
 def transcribe(path, lang, rep=None, duration=None):
@@ -57,36 +99,34 @@ def transcribe(path, lang, rep=None, duration=None):
     Any CUDA failure (missing cuDNN/cuBLAS, OOM...) transparently restarts on CPU. Reports real progress."""
     from . import diagnostics
     from .procutil import JobCancelled
+    from . import resources
     model_name = os.getenv('WHISPER_MODEL', 'small')
     device, compute, note = diagnostics.whisper_settings()
     attempts = [(device, compute)] + ([('cpu', 'int8')] if device == 'cuda' else [])
+    mgr = resources.manager()
+    oom_retry = [True]
     for dev, comp in attempts:
         hb = _Heartbeat(rep)
         try:
-            if not _whisper_cached(model_name):
-                hb.phase(f'Скачиваем модель Whisper «{model_name}» (один раз, ~0.5 ГБ; прогресс в окне сервера)')
-            else:
-                hb.phase(f'Загружаем модель Whisper «{model_name}» ({dev.upper()})')
-            t0 = time.monotonic()
-            model = _get_model(model_name, dev, comp)
-            log.info('Whisper %s loaded on %s/%s in %.1f s', model_name, dev, comp, time.monotonic() - t0)
             batch = whisper_batch_size(dev)
-            out, info, used = None, None, 0
-            if batch:
-                try:
-                    hb.phase(f'Ищем речь во всём файле и распознаём пакетами по {batch} ({dev.upper()}); '
-                             'первые проценты появятся после первого пакета')
-                    out, info = _run_whisper(model, path, lang, rep, duration, dev, batch, hb)
-                    used = batch
-                except JobCancelled:
+            try:
+                lease = _whisper_lease(model_name, dev, comp, batch, getattr(rep, 'cancelled', None))
+            except resources.Unavailable as exc:
+                if dev != 'cuda':
                     raise
-                except Exception as exc:          # OOM / old faster-whisper: the sequential path still works
-                    if CUDA_LIB_ERROR.search(str(exc)):
-                        raise                     # missing cuBLAS/cuDNN: the sequential path would fail too -> CPU
-                    log.warning('batched Whisper failed on %s (%s); sequential decoding', dev, str(exc)[:200])
-            if out is None:
-                hb.phase(f'Распознаём речь ({dev.upper()}); первые проценты появятся через минуту-две')
-                out, info = _run_whisper(model, path, lang, rep, duration, dev, 0, hb)
+                log.warning('Whisper: GPU busy or too small (%s); transcribing on the CPU', exc)
+                mgr.note('cpu_fallback', 'Whisper', str(exc))
+                continue
+            with lease:
+                if not _whisper_cached(model_name):
+                    hb.phase(f'Скачиваем модель Whisper «{model_name}» (один раз, ~0.5 ГБ; прогресс в окне сервера)')
+                else:
+                    hb.phase(f'Загружаем модель Whisper «{model_name}» ({dev.upper()})')
+                t0 = time.monotonic()
+                with _whisper_model(model_name, dev, comp) as model:
+                    log.info('Whisper %s ready on %s/%s in %.1f s', model_name, dev, comp, time.monotonic() - t0)
+                    out, info, used = _transcribe_with(model, path, lang, rep, duration, dev, batch, hb, mgr,
+                                                       oom_retry)
             took = time.monotonic() - t0
             log.info('Whisper done: %d segments, %.0f s of audio in %.0f s (%.1fx realtime, %s, batch %s)', len(out),
                      duration or 0, took, (duration or 0) / max(took, 1), dev, used)
@@ -99,7 +139,10 @@ def transcribe(path, lang, rep=None, duration=None):
         except Exception as exc:
             log.warning('Whisper failed on %s: %s', dev, str(exc)[:300])
             if dev == 'cuda':
-                diagnostics.mark_whisper_gpu_failed(str(exc)[:200])
+                if resources.is_oom(exc):            # out of memory is not a broken GPU: only this run goes to CPU
+                    mgr.on_oom('Whisper', exc)
+                else:
+                    diagnostics.mark_whisper_gpu_failed(str(exc)[:200])
                 _model_cache.clear()
                 continue
             raise
@@ -174,6 +217,35 @@ class _Heartbeat:
         self.done.set()
         if self.thread is not None:
             self.thread.join(timeout=2)
+
+
+def _transcribe_with(model, path, lang, rep, duration, dev, batch, hb, mgr, oom_retry):
+    """Batched decoding first; a CUDA out-of-memory frees idle models and retries once with half the batch;
+    anything else (old faster-whisper...) falls back to sequential decoding."""
+    from . import resources
+    from .procutil import JobCancelled
+    while batch:
+        try:
+            hb.phase(f'Ищем речь во всём файле и распознаём пакетами по {batch} ({dev.upper()}); '
+                     'первые проценты появятся после первого пакета')
+            out, info = _run_whisper(model, path, lang, rep, duration, dev, batch, hb)
+            return out, info, batch
+        except JobCancelled:
+            raise
+        except Exception as exc:
+            if CUDA_LIB_ERROR.search(str(exc)):
+                raise                     # missing cuBLAS/cuDNN: the sequential path would fail too -> CPU
+            if dev == 'cuda' and resources.is_oom(exc) and oom_retry[0] and batch > 1:
+                oom_retry[0] = False
+                mgr.on_oom('Whisper batch', exc)
+                batch = max(1, batch // 2)
+                log.warning('Whisper out of GPU memory; retrying with batch %d', batch)
+                continue
+            log.warning('batched Whisper failed on %s (%s); sequential decoding', dev, str(exc)[:200])
+            break
+    hb.phase(f'Распознаём речь ({dev.upper()}); первые проценты появятся через минуту-две')
+    out, info = _run_whisper(model, path, lang, rep, duration, dev, 0, hb)
+    return out, info, 0
 
 
 def whisper_batch_size(device):
@@ -480,6 +552,8 @@ class BackgroundScreenScan:
         self._stop = threading.Event()
         self._rep = rep
         self._args = (source, duration, Path(cache))
+        from . import resources
+        self._job = resources.manager().current_job()     # leases of the scan belong to this job
         rep.op('screen', 'Анализ экрана: подготовка...', frac=0.0)
         threading.Thread(target=self._run, daemon=True, name='screen-scan').start()
 
@@ -490,11 +564,11 @@ class BackgroundScreenScan:
 
     def _run(self):
         from . import analysis_cache as ac
+        from . import resources
         source, duration, cache = self._args
         try:
-            sp = motion_analysis.scan_screen(source, duration, cancel=lambda: self._stop.is_set() or
-                                             self._rep.cancelled(), progress=self._progress,
-                                             part_path=str(cache / 'screen.part.npz'))
+            with resources.manager().job_context(self._job):
+                sp = self._scan(source, duration, cache)
             if sp is not None:
                 ac.save_npz(cache / 'screen.npz', **motion_analysis.screen_to_arrays(sp))
             self.result = sp
@@ -503,6 +577,11 @@ class BackgroundScreenScan:
         finally:
             self._rep.op('screen', done=True)
             self.done.set()
+
+    def _scan(self, source, duration, cache):
+        return motion_analysis.scan_screen(source, duration, cancel=lambda: self._stop.is_set() or
+                                           self._rep.cancelled(), progress=self._progress,
+                                           part_path=str(cache / 'screen.part.npz'))
 
     def stop(self):
         self._stop.set()
