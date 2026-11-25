@@ -43,7 +43,8 @@ def state(c):
     e = meta.get('edit') or {}
     return {'start': round(c.start, 3), 'end': round(c.end, 3), 'mode': info.get('mode'),
             'overrides': dict(info.get('opts') or {}), 'hook': h.get('selected'),
-            'edit': {'mode': e.get('mode'), 'restore': list(e.get('restore') or [])}}
+            'edit': dict({k: e[k] for k in ('silence', 'zoom', 'overrides') if k in e}, mode=e.get('mode'),
+                         restore=list(e.get('restore') or []))}
 
 
 def original_state(c):
@@ -84,7 +85,8 @@ def clean(draft, c):
     if isinstance(draft.get('edit'), dict):
         m = draft['edit'].get('mode')
         if m in ('off', None) or m in smartedit.MODES:
-            out['edit'] = {'mode': m, 'restore': [str(x) for x in (draft['edit'].get('restore') or [])][:200]}
+            out['edit'] = dict(smartedit.clean_edit(draft['edit']), mode=m,
+                               restore=[str(x) for x in (draft['edit'].get('restore') or [])][:200])
     return out
 
 
@@ -105,7 +107,9 @@ def _put(c, st):
         v = hooks.variant(h, st.get('hook'))
         h['selected'] = None if not v or v['kind'] == 'original' else v['id']
         meta['hooks'] = h
-    meta['edit'] = {'mode': (st.get('edit') or {}).get('mode'), 'restore': list((st.get('edit') or {}).get('restore') or [])}
+    se = st.get('edit') or {}
+    meta['edit'] = dict({k: se[k] for k in ('silence', 'zoom', 'overrides') if k in se}, mode=se.get('mode'),
+                        restore=list(se.get('restore') or []))
     c.meta = meta
 
 
@@ -185,7 +189,8 @@ def preview(p, c, st, segments=None, cancel=None):
     epl = None
     if em and em != 'off':
         epl = smartedit.plan(hooks.load_signals(p, segments), a, b, em, p.clip_min,
-                             restore=set((st.get('edit') or {}).get('restore') or []))
+                             restore=set((st.get('edit') or {}).get('restore') or []),
+                             **smartedit.edit_args(st.get('edit'), opts))
     ed = build_edits(segments, a, b, epl, (c.meta or {}).get('hooks'), st.get('hook'))
     if ed:
         tl = ed['transform'](tl)

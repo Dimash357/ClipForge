@@ -18,7 +18,7 @@
   const FONTS = JSON.parse($('cs-fonts').textContent);
   const HOOK_KIND = {original: 'как есть', start: 'другое начало', teaser: 'тизер в начале'};
   const EDIT = {off: 'Без монтажа', natural: 'Natural', dynamic: 'Dynamic', aggressive: 'Aggressive'};
-  const REASON = {pause: 'пауза', silence: 'тишина', repeat: 'повтор', filler: 'запинка', boring: 'неинтересно'};
+  const REASON = {pause: 'пауза', silence: 'тишина', dead_air: 'пустой промежуток', repeat: 'повтор', filler: 'запинка', boring: 'неинтересно'};
   const STATUS = {ready: 'Готов', rendering: 'Рендер…', queued: 'В очереди', error: 'Ошибка', candidate: 'Кандидат'};
   const fmt = s => s == null ? '—' : `${Math.floor(s / 60)}:${String(Math.round(s % 60)).padStart(2, '0')}`;
   let data = null, timer = null;
@@ -161,7 +161,14 @@
   function stateOf(c) {
     const hk = c.meta && c.meta.hooks, e = (c.meta && c.meta.edit) || {};
     return {start: c.start, end: c.end, mode: c.mode, overrides: {...(c.opts ? pickOv(c.opts) : {})}, hook: hk ? (hk.selected || 'orig') : null,
-      edit: {mode: c.edit_mode || e.mode || 'off', restore: [...(e.restore || [])]}};
+      edit: {mode: c.edit_mode || e.mode || 'off', restore: [...(e.restore || [])], ...editSwitches(e)}};
+  }
+  function editSwitches(e) { const o = {}; for (const k of ['silence', 'zoom']) if (typeof e[k] === 'boolean') o[k] = e[k]; if (e.overrides) o.overrides = {...e.overrides}; return o; }
+  function editQuery(e) {
+    const q = new URLSearchParams({mode: e.mode, restore: (e.restore || []).join(',')});
+    for (const k of ['silence', 'zoom']) if (typeof e[k] === 'boolean') q.set(k, e[k] ? '1' : '0');
+    for (const [k, v] of Object.entries(e.overrides || {})) q.set(k, v);
+    return q.toString();
   }
   function pickOv(o) { const out = {}; for (const k of ['subtitle_style', 'caption_words', 'caption_highlight', 'captions', 'caption_font', 'caption_censor', 'bg_fill', 'cam_position', 'transition']) out[k] = o[k]; return out; }
   function payload() {                // only what really differs from the clip's current state
@@ -195,8 +202,9 @@
   async function loadPlan() {
     const d = ed.draft;
     if (d.edit.mode === 'off') { ed.plan = null; drawEditor(); return; }
-    const r = await fetch(`/api/clips/${ed.clip.id}/edit/?mode=${d.edit.mode}&restore=${encodeURIComponent(d.edit.restore.join(','))}`);
-    ed.plan = r.ok ? (await r.json()).plan : null; drawEditor();
+    const r = await fetch(`/api/clips/${ed.clip.id}/edit/?${editQuery(d.edit)}`);
+    const j = r.ok ? await r.json() : null;
+    ed.plan = j ? j.plan : null; ed.planInfo = j; drawEditor();
   }
   const TABS = {
     bounds() {
@@ -223,11 +231,26 @@
     edit() {
       const d = ed.draft;
       const out = [h('div', {class: 'row'}, ...Object.entries(EDIT).map(([k, l]) => h('button', {class: 'sm' + (d.edit.mode === k ? ' primary' : ''), type: 'button', text: l,
-        onclick: () => { change(s => { s.edit = {mode: k, restore: []}; }); loadPlan(); }})))];
+        onclick: () => { change(s => { s.edit = {mode: k, restore: [], ...editSwitches(s.edit)}; }); loadPlan(); }})))];
+      if (d.edit.mode !== 'off') {
+        const info = ed.planInfo || {}, ch = info.choice || {}, def = info.defaults || {}, lim = info.limits || {};
+        const sw = (k, label) => { const cb = h('input', {type: 'checkbox'}); cb.checked = ch[k] !== false; cb.onchange = () => { change(st => { st.edit[k] = cb.checked; }); loadPlan(); }; return h('label', {class: 'hint'}, cb, ' ' + label); };
+        const sl = (k, label, step) => {
+          const v = (d.edit.overrides || {})[k] ?? (ch.overrides || {})[k] ?? def[k];
+          const i = h('input', {type: 'range', min: (lim[k] || [0, 1])[0], max: (lim[k] || [0, 1])[1], step, value: v});
+          const out = h('small', {class: 'muted', text: ` ${(+v).toFixed(2)}`});
+          i.oninput = () => { out.textContent = ` ${(+i.value).toFixed(2)}`; };
+          i.onchange = () => { change(st => { st.edit.overrides = {...(st.edit.overrides || {}), [k]: +i.value}; }); loadPlan(); };
+          return h('label', {class: 'cs-field'}, h('span', {text: label}), i, out);
+        };
+        out.push(h('div', {class: 'row'}, sw('silence', 'Удалять паузы и тишину'), sw('zoom', 'Авто-зум')),
+          h('div', {class: 'row'}, sl('max', 'Пауза длиннее, с', 0.05), sl('zoom_strength', 'Сила зума', 0.05), sl('zoom_rate', 'Зумов на 10 с', 0.1)));
+      }
       if (d.edit.mode !== 'off' && !ed.plan) { out.push(h('small', {class: 'muted', text: 'Считаем план…'})); loadPlan(); return out; }
       if (ed.plan) {
         const s = ed.plan.stats;
-        out.push(h('small', {class: 'muted', text: `${s.original.toFixed(1)} → ${s.result.toFixed(1)} с, вырезано ${s.removed.toFixed(1)} с`}));
+        out.push(h('small', {class: 'muted', text: `${s.original.toFixed(1)} → ${s.result.toFixed(1)} с, вырезано ${s.removed.toFixed(1)} с · пауз удалено: ${s.pauses ?? 0} · зумов: ${s.zooms ?? 0}`}));
+        if ((ed.plan.zooms || []).length) out.push(h('small', {class: 'hint', text: 'Зум: ' + ed.plan.zooms.map(z => `${z.t.toFixed(1)} с ×${z.level.toFixed(2)} (${z.label})`).join(' · ')}));
         out.push(h('div', {class: 'editcuts'}, ...ed.plan.cuts.map(x => { const cb = h('input', {type: 'checkbox'}); cb.checked = x.applied !== false && !d.edit.restore.includes(x.id); cb.disabled = !!x.skipped;
           cb.onchange = () => { change(st => { st.edit.restore = cb.checked ? st.edit.restore.filter(i => i !== x.id) : [...st.edit.restore, x.id]; }); loadPlan(); };
           return h('label', {class: 'hint', title: x.skipped || false}, cb, ` ${x.start.toFixed(1)}–${x.end.toFixed(1)} с · ${REASON[x.reason]} · ${x.seconds.toFixed(1)} с`); })));

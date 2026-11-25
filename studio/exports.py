@@ -46,6 +46,8 @@ DEFAULTS = {
     'hook_engine': 'suggest',
     # v6 (2B): Smart Editing - off | natural | dynamic | aggressive (cuts pauses / repeats / dull parts)
     'smart_edit': 'off',
+    # Smart Editing switches: silence / dead-air removal and Smart Auto Zoom (both inside the chosen mode)
+    'smart_silence': True, 'smart_zoom': True,
     # v6 (2C): Viral Director - off | rank (score, explain, mark duplicates) | auto (also pick the best clips + combo)
     'viral_director': 'rank',
 }
@@ -62,7 +64,7 @@ CHOICES = {
 }
 LOUDNESS = {'stream': {'I': -14.0, 'TP': -1.5, 'LRA': 11.0}}
 BOOLS = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
-         'highlight_motion', 'auto_length', 'highlight_sound_ai', 'caption_censor')
+         'highlight_motion', 'auto_length', 'highlight_sound_ai', 'caption_censor', 'smart_silence', 'smart_zoom')
 
 
 def _b(v):

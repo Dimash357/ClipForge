@@ -1009,7 +1009,9 @@ def _edit_plan(p, c, segments, sig=None):
     if mode == 'off' or mode not in smartedit.MODES:
         return None
     sig = sig or hooks.load_signals(p, segments)
-    pl = smartedit.plan(sig, c.start, c.end, mode, p.clip_min, restore=set(e.get('restore') or []))
+    opts = exports.resolve(p.options, (c.render_info or {}).get('opts'))
+    pl = smartedit.plan(sig, c.start, c.end, mode, p.clip_min, restore=set(e.get('restore') or []),
+                        **smartedit.edit_args(e, opts))
     e.update(plan=pl)
     c.meta = dict(c.meta or {}, edit=e)
     Clip.objects.filter(pk=c.pk).update(meta=c.meta)
@@ -1020,7 +1022,8 @@ def build_edits(segments, start, end, plan=None, hooks_data=None, selected=None)
     """Smart Editing plan + Hook teaser for a clip range -> {'transform', 'info'} or None (nothing to change).
     Shared by the render path and the Studio preview."""
     from . import hooks, smartedit, textutil
-    pl = plan if plan and (len(plan['keep']) > 1 or plan['keep'][0] != list(plan['clip'])) else None
+    pl = plan if plan and (len(plan['keep']) > 1 or plan['keep'][0] != list(plan['clip']) or plan.get('zooms')) \
+        else None
     v = hooks.variant(hooks_data or {}, selected)
     teaser = v['teaser'] if v and v['kind'] == 'teaser' and start - 0.05 <= v['teaser'][0] and \
         v['teaser'][1] <= end + 0.05 else None
@@ -1029,7 +1032,9 @@ def build_edits(segments, start, end, plan=None, hooks_data=None, selected=None)
     info = {}
     if pl:
         info['edit'] = {'mode': pl['mode'], 'removed': pl['stats']['removed'], 'cuts': pl['stats']['cuts'],
-                        'by_reason': pl['stats']['by_reason']}
+                        'by_reason': pl['stats']['by_reason'], 'original': pl['stats']['original'],
+                        'result': pl['stats']['result'], 'pauses': pl['stats'].get('pauses', 0),
+                        'zooms': pl['stats'].get('zooms', 0)}
     if teaser:
         info['hook'] = {'kind': 'teaser', 'variant': v['id'], 'teaser': teaser, 'score': v['score'],
                         'renderer': 'timeline'}

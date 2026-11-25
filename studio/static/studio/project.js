@@ -227,19 +227,28 @@ function hookBox(c) {
 }
 
 // ---------------------------------------------------------------- Smart Editing (2B)
-const EDIT_REASON = {pause: 'пауза', silence: 'тишина', repeat: 'повтор', filler: 'запинка', boring: 'неинтересно'};
+const EDIT_REASON = {pause: 'пауза', silence: 'тишина', dead_air: 'пустой промежуток', repeat: 'повтор', filler: 'запинка', boring: 'неинтересно'};
 function editBox(c) {
   const e = (c.meta || {}).edit || {};
   const applied = e.mode || null;
-  const st = e.plan && e.mode && e.mode !== 'off' ? e.plan.stats : null;
+  const st = e.plan && (e.mode || e.plan.mode) && (e.mode || e.plan.mode) !== 'off' ? e.plan.stats : null;
   const box = h('details', {class: 'hookbox'});
-  box.append(h('summary', {text: 'Монтаж: ' + (st ? `${e.plan.mode} · −${st.removed.toFixed(1)} с (${st.original.toFixed(0)} → ${st.result.toFixed(0)} с)` : 'оригинал')}));
+  box.append(h('summary', {text: 'Монтаж: ' + (st ? `${e.plan.mode} · −${st.removed.toFixed(1)} с (${st.original.toFixed(0)} → ${st.result.toFixed(0)} с), пауз ${st.pauses ?? 0}, зумов ${st.zooms ?? 0}` : 'оригинал')}));
   const body = h('div');
   const err = h('div', {class: 'error', style: 'display:none'});
   const player = h('video', {controls: true, preload: 'none', style: 'display:none;width:100%;max-height:220px;margin:6px 0'});
   let cur = null, restore = new Set(e.restore || []);
+  const choice = {};                                   // silence / zoom switches and slider overrides
+  for (const k of ['silence', 'zoom']) if (typeof e[k] === 'boolean') choice[k] = e[k];
+  if (e.overrides) choice.overrides = {...e.overrides};
+  const query = (mode) => {
+    const q = new URLSearchParams({mode, restore: [...restore].join(',')});
+    for (const k of ['silence', 'zoom']) if (typeof choice[k] === 'boolean') q.set(k, choice[k] ? '1' : '0');
+    for (const [k, v] of Object.entries(choice.overrides || {})) q.set(k, v);
+    return q.toString();
+  };
   const load = async (mode) => {
-    const r = await fetch(`/api/clips/${c.id}/edit/?mode=${mode}&restore=${encodeURIComponent([...restore].join(','))}`); const d = await r.json();
+    const r = await fetch(`/api/clips/${c.id}/edit/?${query(mode)}`); const d = await r.json();
     if (!r.ok) { err.style.display = 'block'; err.textContent = d.error || 'Не удалось'; return; }
     cur = d; draw();
   };
@@ -247,16 +256,28 @@ function editBox(c) {
     if (!cur) return;
     const keep = cur.plan ? cur.plan.keep : [[c.start, c.end]];
     player.style.display = ''; player.src = `${data.source_url}#t=${keep[0][0]}`;
+    const zooms = cur.plan ? cur.plan.zooms || [] : [];
+    const zoomAt = (t) => {                              // the planned punch-in at source time t (approximate)
+      for (const z of zooms) {
+        const a = z.t - 0.08, b = a + z.ease, c2 = b + z.hold, d2 = c2 + 0.4;
+        if (t < a || t > d2) continue;
+        const f = t < b ? (t - a) / z.ease : t < c2 ? 1 : 1 - (t - c2) / 0.4;
+        return 1 + (z.level - 1) * Math.max(0, Math.min(1, f));
+      }
+      return 1;
+    };
+    player.style.transition = 'transform .12s linear';
     player.ontimeupdate = () => {
       const t = player.currentTime;
       const k = keep.findIndex(r => t < r[1] - 0.03);
-      if (k < 0) { player.pause(); return; }
+      if (k < 0) { player.pause(); player.style.transform = ''; return; }
       if (t < keep[k][0] - 0.05) player.currentTime = keep[k][0];          // jump over what is cut
+      player.style.transform = `scale(${zoomAt(t).toFixed(3)})`;
     };
     player.play().catch(() => {});
   };
   const apply = async (mode) => {
-    const r = await post(`/api/clips/${c.id}/edit/`, {mode, restore: [...restore]});
+    const r = await post(`/api/clips/${c.id}/edit/`, {mode, restore: [...restore], ...choice});
     if (!r.ok) { err.style.display = 'block'; err.textContent = (await r.json()).error || 'Не удалось'; return; }
     poll();
   };
@@ -265,6 +286,19 @@ function editBox(c) {
     const modes = h('div', {class: 'row'});
     for (const [k, m] of Object.entries(cur.modes)) modes.append(h('button', {type: 'button', class: 'sm' + (k === cur.mode ? ' primary' : ''), title: m.note, text: m.label, onclick: () => load(k)}));
     body.append(modes);
+    if (cur.mode !== 'off' && cur.choice) {
+      const sw = (k, label) => { const cb = h('input', {type: 'checkbox'}); cb.checked = cur.choice[k] !== false; cb.onchange = () => { choice[k] = cb.checked; load(cur.mode); }; return h('label', {class: 'hint', style: 'display:flex;gap:8px;align-items:center;justify-content:flex-start'}, h('span', {style: 'flex:none'}, cb), h('span', {text: label})); };
+      const sl = (k, label, step) => {
+        const v = (choice.overrides || {})[k] ?? cur.defaults[k];
+        const i = h('input', {type: 'range', min: cur.limits[k][0], max: cur.limits[k][1], step, value: v, style: 'width:110px'});
+        const o = h('small', {class: 'muted', text: ` ${(+v).toFixed(2)}`});
+        i.oninput = () => { o.textContent = ` ${(+i.value).toFixed(2)}`; };
+        i.onchange = () => { choice.overrides = {...(choice.overrides || {}), [k]: +i.value}; load(cur.mode); };
+        return h('label', {class: 'hint', title: label, style: 'display:flex;gap:6px;align-items:center'}, label, i, o);
+      };
+      body.append(h('div', {style: 'display:grid;gap:4px;margin:6px 0'}, sw('silence', 'Удалять паузы и тишину'), sw('zoom', 'Авто-зум на реакциях и событиях')),
+        h('div', {class: 'row'}, sl('max', 'Пауза длиннее, с', 0.05), sl('zoom_strength', 'Сила зума', 0.05), sl('zoom_rate', 'Зумов на 10 с', 0.1)));
+    }
     if (cur.plan) {
       const s = cur.plan.stats; const L = s.original || 1;
       const bar = h('div', {class: 'editbar'});
@@ -274,8 +308,10 @@ function editBox(c) {
         bar.append(h('i', {class: 'keep', style: `width:${100 * (b - a) / L}%`})); pos = b;
       }
       if (pos < cur.plan.clip[1]) bar.append(h('i', {class: 'cut', style: `width:${100 * (cur.plan.clip[1] - pos) / L}%`}));
-      body.append(bar, h('small', {class: 'muted', text: `${s.original.toFixed(1)} → ${s.result.toFixed(1)} с, вырезано ${s.removed.toFixed(1)} с: ` +
-        (Object.entries(s.by_reason).map(([k, v]) => `${EDIT_REASON[k]} ${v.toFixed(1)} с`).join(', ') || 'ничего')}));
+      body.append(bar, h('small', {class: 'muted', style: 'display:block', text: `${s.original.toFixed(1)} → ${s.result.toFixed(1)} с, вырезано ${s.removed.toFixed(1)} с: ` +
+        (Object.entries(s.by_reason).map(([k, v]) => `${EDIT_REASON[k]} ${v.toFixed(1)} с`).join(', ') || 'ничего') +
+        ` · пауз удалено: ${s.pauses ?? 0} · зумов: ${s.zooms ?? 0}`}));
+      if ((cur.plan.zooms || []).length) body.append(h('small', {class: 'hint', style: 'display:block', text: 'Зум: ' + cur.plan.zooms.map(z => `${z.t.toFixed(1)} с ×${z.level.toFixed(2)} (${z.label})`).join(' · ')}));
       const list = h('div', {class: 'editcuts'});
       for (const x of cur.plan.cuts) {
         const cb = h('input', {type: 'checkbox'}); cb.checked = x.applied !== false && !restore.has(x.id);
@@ -287,7 +323,7 @@ function editBox(c) {
     }
     body.append(h('div', {class: 'row'}, h('button', {type: 'button', class: 'sm', text: '▶ Предпросмотр', onclick: preview}),
       h('button', {type: 'button', class: 'sm primary', text: cur.mode === 'off' ? '↺ Вернуть оригинал' : 'Применить и перемонтировать', onclick: () => apply(cur.mode)})),
-      applied ? h('small', {class: 'muted', text: `Сейчас в клипе: ${applied === 'off' ? 'оригинал' : applied}`}) : null);
+      ...(applied ? [h('small', {class: 'muted', text: `Сейчас в клипе: ${applied === 'off' ? 'оригинал' : applied}`})] : []));
   }
   box.addEventListener('toggle', () => { if (box.open && !cur) load(applied || 'dynamic'); });
   box.append(body, player, err);

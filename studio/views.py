@@ -27,9 +27,9 @@ OPTION_FIELDS = ('preset', 'quality', 'fps', 'encoder', 'subtitle_style', 'capti
                  'director_fallback', 'transition', 'smart_tracking', 'hide_cam', 'cam_position', 'highlight_engine',
                  'review_first', 'captions', 'caption_highlight', 'text_guard', 'cam_fit', 'cam_fill',
                  'highlight_audio', 'highlight_motion', 'loudness', 'streamer', 'highlight_sound_ai', 'caption_font',
-                 'caption_censor', 'hook_engine', 'smart_edit', 'viral_director')
+                 'caption_censor', 'hook_engine', 'smart_edit', 'viral_director', 'smart_silence', 'smart_zoom')
 CHECKBOXES = ('captions', 'caption_animate', 'smart_tracking', 'hide_cam', 'review_first', 'text_guard', 'highlight_audio',
-              'highlight_motion', 'highlight_sound_ai', 'caption_censor')
+              'highlight_motion', 'highlight_sound_ai', 'caption_censor', 'smart_silence', 'smart_zoom')
 
 
 def _ctx_index(**extra):
@@ -613,9 +613,20 @@ def clip_edit(request, pk):
             return JsonResponse({'error': 'Неизвестный режим.'}, status=400)
         rq = request.GET.get('restore')
         restore = set(filter(None, rq.split(','))) if rq is not None else set(e.get('restore') or [])
-        plan = smartedit.plan(hooks.load_signals(p), clip.start, clip.end, mode, p.clip_min, restore=restore)
+        choice = dict(e)
+        q = {k: request.GET[k] for k in ('silence', 'zoom') if k in request.GET}
+        ov = {k: request.GET[k] for k in smartedit.OVERRIDES if k in request.GET}
+        if q or ov:
+            choice.update(smartedit.clean_edit(dict(q, overrides=ov)))
+        opts = exports.resolve(p.options, (clip.render_info or {}).get('opts'))
+        args = smartedit.edit_args(choice, opts)
+        plan = smartedit.plan(hooks.load_signals(p), clip.start, clip.end, mode, p.clip_min, restore=restore, **args)
         return JsonResponse({'mode': mode, 'plan': plan, 'modes': _edit_modes(), 'applied': e.get('mode'),
-                             'source_url': _file_url(p.source)})
+                             'source_url': _file_url(p.source), 'choice': args,
+                             'defaults': {k: smartedit.MODES[mode][k] if k in smartedit.MODES[mode] else
+                                          (1.0 if k == 'zoom_strength' else smartedit.MODES[mode]['rate'])
+                                          for k in smartedit.OVERRIDES},
+                             'limits': smartedit.OVERRIDES})
     data = _json_body(request)
     mode = data.get('mode')
     if mode != 'off' and mode not in smartedit.MODES:
@@ -623,7 +634,7 @@ def clip_edit(request, pk):
     if jobs.is_active(p.pk):
         return _busy(p.pk)
     restore = [str(x) for x in (data.get('restore') or [])][:200]
-    clip.meta = dict(clip.meta or {}, edit={'mode': mode, 'restore': restore})
+    clip.meta = dict(clip.meta or {}, edit=dict(smartedit.clean_edit(data), mode=mode, restore=restore))
     clip.save(update_fields=['meta', 'updated_at'])
     if not jobs.enqueue('render', p.pk, clip_ids=[clip.pk], hook=True):
         return _busy(p.pk)

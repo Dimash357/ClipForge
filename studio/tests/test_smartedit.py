@@ -78,8 +78,8 @@ class Plan(SimpleTestCase):
         self.assertLess(pl['stats']['result'], smartedit.plan(sig(TR), 0.0, 23.0, 'dynamic', clip_min=8)['stats']['result'])
 
     def test_length_floor_and_manual_restore(self):
-        pl = smartedit.plan(sig(TR), 0.0, 23.0, 'aggressive', clip_min=21)
-        self.assertGreaterEqual(pl['stats']['result'], 21 * 0.85 - 0.01)
+        pl = smartedit.plan(sig(TR), 0.0, 23.0, 'aggressive', clip_min=30)
+        self.assertGreaterEqual(pl['stats']['result'], 30 * smartedit.MODES['aggressive']['floor'] - 0.01)
         self.assertTrue(any(c.get('skipped') for c in pl['cuts']))
         full = smartedit.plan(sig(TR), 0.0, 23.0, 'dynamic', clip_min=10)
         rid = next(c['id'] for c in full['cuts'] if c['reason'] == 'repeat')
@@ -140,7 +140,13 @@ class IR(SimpleTestCase):
             self.assertEqual(x0[0], 0.0)
             self.assertAlmostEqual(x0[1], 100 + 600 * v.src_in / 12.0, delta=1.0)
         self.assertTrue(any(a.property == 'zoom' for v in action[1:] for a in v.animations))   # punch-ins hide cuts
-        self.assertFalse(any(v.animations for v in cam))                # never zoom over the webcam panel
+        for v in cam:                     # webcam panel: no jump-cut zoom; a punch-in only aims at the face panel
+            props = {a.property for a in v.animations}
+            if props:
+                self.assertIn('pan_y', props)
+                self.assertTrue(all(k.value <= smartedit.MAX_ZOOM for a in v.animations if a.property == 'zoom'
+                                    for k in a.keyframes))
+                self.assertEqual(next(a for a in v.animations if a.property == 'zoom').keyframes[0].value, 1.0)
         nat = smartedit.to_timeline(tl, smartedit.plan(sig(TR), 0.0, 23.0, 'natural', clip_min=10), 0.0, 'natural')
         self.assertFalse(any(a.keyframes[0].value > 1.0 and len(a.keyframes) == 1
                              for v in nat.tracks[0].items if v.type == 'video' for a in v.animations))
@@ -221,6 +227,18 @@ class RenderAndApi(TransactionTestCase):
         self.assertTrue(d['plan']['keep'])
         self.assertEqual(self.client.post(f'/api/clips/{c.pk}/edit/', {'mode': 'wild'},
                                           content_type='application/json').status_code, 400)
+        off = self.client.get(f'/api/clips/{c.pk}/edit/?mode=dynamic&silence=0&zoom=0&max=2.5').json()
+        self.assertEqual((off['choice']['silence'], off['choice']['zoom'], off['plan']['zooms']), (False, False, []))
+        self.assertFalse([x for x in off['plan']['cuts'] if x['applied'] and x['reason'] in smartedit.SILENT])
+        self.assertEqual(off['plan']['settings']['max'], 2.5)
+        self.assertTrue({'pauses', 'zooms', 'original', 'result'} <= set(off['plan']['stats']))
+        r = self.client.post(f'/api/clips/{c.pk}/edit/', {'mode': 'dynamic', 'zoom': False, 'overrides': {'max': 0.5}},
+                             content_type='application/json')
+        self.assertEqual(r.status_code, 200)
+        self.wait(p)
+        c.refresh_from_db()
+        self.assertEqual((c.meta['edit']['zoom'], c.meta['edit']['overrides']), (False, {'max': 0.5}))
+        self.assertEqual(c.meta['edit']['plan']['zooms'], [])
         r = self.client.post(f'/api/clips/{c.pk}/edit/', {'mode': 'dynamic'}, content_type='application/json')
         self.assertEqual(r.status_code, 200)
         self.wait(p)
